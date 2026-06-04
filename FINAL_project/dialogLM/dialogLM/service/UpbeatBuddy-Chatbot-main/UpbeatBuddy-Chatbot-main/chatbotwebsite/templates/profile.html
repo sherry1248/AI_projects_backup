@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}
+프로필
+{% endblock %}
+
+{% block content %}
+<link href="{% static 'style3.css'%}" rel="stylesheet" type="text/css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.9.4/Chart.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<div id="sentiments-data" data-value='{{ sentiments|escapejs|safe }}' style="display: none;"></div>
+<style>
+  * {
+    box-sizing: border-box;
+  }
+
+  .column {
+    float: left;
+    width: 50%;
+    padding: 10px;
+    height: 800px;
+  }
+
+  .row:after {
+    content: "";
+    display: table;
+    clear: both;
+  }
+
+  th,
+  td {
+    border-bottom: 1px solid rgb(46, 44, 44);
+    border: 1px solid;
+  }
+
+  tr:hover {
+    background-color: cyan;
+  }
+
+  #popup-1 {
+    display: none;
+    background-color: rgba(0, 0, 0, 0.5);
+    position: left;
+    height: 100vh;
+    width: 100%;
+  }
+
+  .popup-content {
+    position: relative;
+    padding: 20px;
+    margin: 0 auto;
+    background-color: white;
+    width: 400px;
+    top: 5vh;
+  }
+
+
+</style>
+
+<hr>
+
+{%if newUser %}
+<h3>행복 지수를 얻으려면 채팅을 해주세요</h3>
+{%else%}
+{% if dataObj %}
+<div id="popup-1">
+  <div class="popup-content">
+    <h1>현재 채팅 세션의 분석</h1>
+    <p>행복 지수: {{dataObj.score}}</p>
+    <p>긍정 문장 수: {{dataObj.posCount}}</p>
+    <p>부정 문장 수: {{dataObj.negCount}}</p>
+
+    <button id="close-popup-1">Close</button>
+  </div>
+</div>
+{%endif%}
+<main class="container">
+  <div class="row" style="background-color:white;">
+    <div class="column">
+      <br>
+      <br>
+      <br>
+      <h2>당신의 진전을 살펴봅시다</h2>
+      <canvas id="myChart" style="width:100%;max-width:600px"></canvas>
+      <div id="sentimentText"></div>
+      <script>
+        var lineScores = JSON.parse("{{ line_scores|escapejs }}");
+        // 실제 데이터를 넣는 코드
+        var dates = Object.keys(lineScores);
+        var positiveScores = dates.map(date => lineScores[date]['긍정적(기쁨, 즐거움)'] || 0);
+        var negativeScores = dates.map(date => lineScores[date]['부정적(슬픔, 짜증남)'] || 0);
+
+        var dates = ["2024-01-23","2024-01-24","2024-01-25","2024-01-26", "2024-01-27", "2024-01-28", "2024-01-29",];
+        // var positiveScores = [1, 3, 4, 2, 3, 6, 3]; // 긍정 임의의 데이터
+        var negativeScores = [14, 16, 12, 10, 12, 15, 18]; // 부정 임의의 데이터
+
+        new Chart("myChart", {
+          type: "line",
+          data: {
+            labels: dates,
+            datasets: [
+              // {
+              //   label: '긍정적(기쁨, 즐거움)',
+              //   data: positiveScores,
+              //   borderColor: 'rgba(0,0,255,0.1)',
+              //   fill: false
+              // },
+              {
+                label: '부정적(슬픔, 짜증남)',
+                data: negativeScores,
+                borderColor: 'rgba(255,0,0,0.1)',
+                fill: false
+              }
+            ]
+          },
+          options: {
+            scales: {
+              xAxes: [{
+                ticks: {
+                  display: false  // x축 레이블을 숨깁니다.
+                }
+              }],
+              yAxes: [{ 
+                ticks: { min: 0, max: 30 } 
+              }]
+            },
+            tooltips: {
+              callbacks: {
+                label: function(tooltipItem, data) {
+                  var label = data.datasets[tooltipItem.datasetIndex].label || '';
+                  if (label) {
+                    label += ': ';
+                  }
+                  label += Math.floor(tooltipItem.yLabel);
+                  return label;
+                }
+              }
+            }
+          }
+        });
+
+      </script>
+
+      <h2>당신의 감정 분포</h2>
+      <canvas id="sentimentChart" style="width:100%;max-width:600px"></canvas>
+      <div id="sentimentTextTarget"></div>
+      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+      <script>
+          var barScores = {
+              // "기쁨(행복한)": 10,
+              // "즐거운(신나는)": 15,
+              // "고마운": 7,
+              // "일상적인": 12,
+              // "사랑하는": 6,
+              "생각이 많은": 11,
+              // "설레는(기대하는)": 7,
+              "슬픔(우울한)": 20,
+              "걱정스러운(불안한)": 19,
+              "힘듦(지침)": 27,
+          };
+          // 실제 데이터 
+          // var barScores = JSON.parse('{{ bar_scores|escapejs }}');
+          var labels = Object.keys(barScores);
+          var data = Object.values(barScores).map(score => Math.round(score));
+
+          // 데이터에 따른 색상 결정
+          var colors = data.map(score => {
+              if (score < 10) {
+                  return 'rgba(75, 192, 192, 0.2)';  // 점수가 10 미만인 경우
+              } else if (score < 20) {
+                  return 'rgba(255, 206, 86, 0.2)';  // 점수가 10 이상 20 미만인 경우
+              } else {
+                  return 'rgba(255, 99, 132, 0.2)';  // 점수가 20 이상인 경우
+              }
+          });
+
+          var ctx = document.getElementById('sentimentChart').getContext('2d');
+          var sentimentChart = new Chart(ctx, {
+              type: 'bar',
+              data: {
+                  labels: labels,
+                  datasets: [{
+                      label: '일반군',
+                      data: data.map(score => (score < 9 ? score : 0)),
+                      backgroundColor: colors.map(color => (color.includes('255, 99, 132') ? 'rgba(0, 0, 255, 0.2)' : color)),
+                      borderColor: colors.map(color => (color.includes('255, 99, 132') ? 'rgba(0, 0, 255, 1)' : color.replace('0.2', '1'))),
+                      borderWidth: 1
+                  }, {
+                      label: '위험군',
+                      data: data.map(score => (score >= 10 && score < 20 ? score : 0)),
+                      backgroundColor: colors.map(color => (color.includes('255, 99, 132') ? 'rgba(255, 165, 0, 0.2)' : color)),
+                      borderColor: colors.map(color => (color.includes('255, 99, 132') ? 'rgba(255, 165, 0, 1)' : color.replace('0.2', '1'))),
+                      borderWidth: 1
+                  }, {
+                      label: '고위험군',
+                      data: data.map(score => (score >= 20 ? score : 0)),
+                      backgroundColor: colors.map(color => (color.includes('255, 99, 132') ? 'rgba(255, 0, 0, 0.2)' : color)),
+                      borderColor: colors.map(color => (color.includes('255, 99, 132') ? 'rgba(255, 0, 0, 1)' : color.replace('0.2', '1'))),
+                      borderWidth: 1
+                  }]
+              },
+              options: {
+                  indexAxis: 'y',
+                  scales: {
+                      x: {
+                          beginAtZero: true,
+                          max: 30
+                      }
+                  },
+                  plugins: {
+                      legend: {
+                          position: 'right',
+                          labels: {
+                              generateLabels: function(chart) {
+                                  const labels = chart.data.datasets.map((dataset, i) => {
+                                      let color = 'black'; // 기본 색상
+                                      if (dataset.label === '일반군') {
+                                          color = 'rgba(75, 192, 192, 0.5)';
+                                      } else if (dataset.label === '위험군') {
+                                          color = 'rgba(255, 206, 86, 0.7)';
+                                      } else if (dataset.label === '고위험군') {
+                                          color = 'rgba(255, 99, 132, 0.5)';
+                                      }
+                                      return {
+                                          text: dataset.label,
+                                          fontColor: color, // 여기에서 각 라벨의 텍스트 색상을 지정합니다.
+                                          fillStyle: color, // 레전드 상자의 색상도 여기로 지정합니다.
+                                      };
+                                  });
+                                  return labels;
+                              }
+                          }
+                      }
+                  },
+                  tooltips: {
+                      mode: 'index',
+                      intersect: false,
+                      callbacks: {
+                          label: function (tooltipItem, data) {
+                              var datasetLabel = data.datasets[tooltipItem.datasetIndex].label || '';
+                              return datasetLabel + ': ' + tooltipItem.yLabel;
+                          }
+                      }
+                  }
+              }
+          });
+      </script>
+    </div>
+
+
+    <div class="column" style="background-color:white;">
+      <div class="card-container">
+        <h3>{{request.user}}</h3>
+        <h6>나이 : {{age}}</h6>
+        <p>이메일: {{email}}</p>
+        <div class="buttons">
+          <div class="buttons">
+            <button class="primary">
+              {{ most_frequent_sentiment }}
+            </button>
+            <br>
+            <p>가장 최근 감정이 표시 됩니다.</p>
+            <br>
+            <img class="round" src="https://raw.githubusercontent.com/shelly1248/bookbot/main/%EB%B0%94%EB%A3%A8%EB%8B%A4.png" alt="user" width="200" height="200"/>
+          </div>
+          <div class="skills">
+            <h6>제안된 치료 </h6>
+            <ul>
+              <li>산책 가기</li>
+              <li>쉬어 가기</li>
+              <li>정기적으로 명상하기</li>
+            </ul>
+            <div id="sentimentTextTarget"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+<!--
+  function startRoutine() {
+  // 여기에 랜덤 이벤트를 생성하고 표시하는 코드를 추가하세요
+  var events = [
+    "오늘은 더 길게 산책을 즐겨보세요!",
+    "새로운 장소에서 쉬어가보세요.",
+    "명상 시간을 늘려보세요. 높은 집중도로 진행해보세요."
+  ];
+
+  var randomEvent = events[Math.floor(Math.random() * events.length)];
+
+  document.getElementById("sentimentTextTarget").innerHTML = randomEvent;
+}
+그리고 JavaScript 함수를 추가하여 버튼을 눌렀을 때 랜덤으로 나온 도전 과제 또는 긍정적인 메시지를 보여줄 수 있습니다. 
+이제 루틴 시작 버튼을 누르면 위에서 정의한 이벤트 중 하나가 랜덤으로 선택되어 나타날 것입니다.
+체크리스트 이벤트: 이는 사용자가 할 일 목록을 작성하고, 완료한 항목을 체크하는 것을 돕습니다. 예를 들어, 하루 동안 수행해야 하는 작업이나 목표를 관리하고 추적할 수 있습니다
+-->
+</main>
+
+{%endif%}
+{% endblock %}
+
+<script>
+  var popup1 = document.getElementById("popup-1")
+ var closePopup1 = document.getElementById('close-popup-1')
+ console.log("popup1: ", popup1);
+ if (popup1) {  // popup1이 존재하는지 체크
+   popup1.style.display = "block";
+   closePopup1.addEventListener('click', () => {
+     popup1.style.display = "none";
+   });
+ } else {
+   console.log("popup-1이라는 id를 가진 요소를 찾을 수 없습니다.");
+ }
+</script>

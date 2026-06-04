@@ -1,0 +1,44 @@
+{% extends "base.html" %} {% block title %}입출고 이력 - IoT 기반 재고 조사/재고
+관리 SW{% endblock %} {% block content %}
+<div class="section-header">
+  <h1 class="h3 mb-1">입출고 이력</h1>
+  <p class="text-muted mb-0">
+    입고(IN)와 출고(OUT) 처리 기록을 단순 표로 확인합니다.
+  </p>
+</div>
+
+<div class="panel-card">
+  <div class="table-responsive mobile-table-wrap">
+    <table class="table align-middle mb-0">
+      <thead>
+        <tr>
+          <th>이력 ID</th>
+          <th>상품 ID</th>
+          <th>처리</th>
+          <th>수량</th>
+          <th>작업자</th>
+          <th>일시</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ log.log_id }}</td>
+          <td>{{ log.product_id }}</td>
+          <td>{{ log.change_type }}</td>
+          <td>{{ log.quantity }}</td>
+          <td>{{ log.username }}</td>
+          <td>{{ log.created_at }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-center text-muted py-4">
+            입출고 이력이 없습니다.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

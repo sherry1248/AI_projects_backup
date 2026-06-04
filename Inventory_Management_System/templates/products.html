@@ -1,0 +1,94 @@
+{% extends "base.html" %} {% block title %}상품 등록 - IoT 기반 재고 조사/재고
+관리 SW{% endblock %} {% block content %}
+<div class="section-header">
+  <h1 class="h3 mb-1">상품 등록</h1>
+  <p class="text-muted mb-0">
+    상품 ID, 상품명, 최소 수량만 입력하는 단순 등록 화면입니다.
+  </p>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="panel-card h-100">
+      <form method="post" class="stack-form">
+        <div>
+          <label class="form-label" for="product_id">상품 ID</label>
+          <input
+            class="form-control form-control-lg"
+            id="product_id"
+            name="product_id"
+            placeholder="예: 8801234567890"
+            required
+          />
+        </div>
+        <div>
+          <label class="form-label" for="name">상품명</label>
+          <input
+            class="form-control form-control-lg"
+            id="name"
+            name="name"
+            placeholder="예: 샴푸"
+            required
+          />
+        </div>
+        <div>
+          <label class="form-label" for="min_quantity">최소 수량</label>
+          <input
+            class="form-control form-control-lg"
+            id="min_quantity"
+            name="min_quantity"
+            type="number"
+            min="0"
+            value="3"
+            required
+          />
+        </div>
+        <button class="btn btn-primary btn-lg touch-button" type="submit">
+          등록/수정
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    <div class="panel-card h-100">
+      <div class="table-responsive mobile-table-wrap">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>상품 ID</th>
+              <th>상품명</th>
+              <th>재고</th>
+              <th>최소 수량</th>
+              <th>상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for product in products %}
+            <tr>
+              <td>{{ product.product_id }}</td>
+              <td>{{ product.name }}</td>
+              <td>{{ product.quantity }}</td>
+              <td>{{ product.min_quantity }}</td>
+              <td>
+                {% if product.quantity < product.min_quantity %}
+                <span class="badge text-bg-warning">부족</span>
+                {% else %}
+                <span class="badge text-bg-success">정상</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="5" class="text-center text-muted py-4">
+                등록된 상품이 없습니다.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

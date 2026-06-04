@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}
+로그인/회원가입
+{% endblock %}
+
+{% block content %}
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script src="https://kit.fontawesome.com/64d58efce2.js" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="{% static 'style2.css'%}" />
+
+<body>
+  <div class="container">
+    <div class="forms-container">
+      <div class="signin-signup">
+        <form action="{% url 'login' %}" method="POST" class="sign-in-form">
+          {% csrf_token %}
+          {{ form3.non_field_errors }}
+          <h2 class="title">로그인</h2>
+          <div class="input-field">
+            <p>아이디:</p>
+            <input type="text" name="{{ form3.username.name }}" id="id_username_login" value="{{ form3.username.value|default:'' }}" required>
+          </div>
+          <div class="input-field">
+            <p>비밀번호:</p>
+            {{ form3.password }}
+          </div>
+          <input type="submit" class="btn" value="로그인" name="login" />
+        </form>
+      
+        <form action="{% url 'login' %}" method="POST" class="sign-up-form">
+            {% csrf_token %}
+            <h2 class="title">회원가입</h2>
+            <div class="input-field">
+                <p>아이디:</p>
+                <input type="text" name="{{ form1.username.name }}" id="id_username_register" value="{{ form1.username.value|default:'' }}" required>
+            </div>
+            <div class="input-field">
+                <p>비밀번호:</p>
+                {{ form1.password1 }}
+            </div>
+            <div class="input-field">
+                <p>비밀번호 확인:</p>
+                {{ form1.password2 }}
+            </div>
+            <div class="input-field">
+                <p>이메일:</p>
+                {{ form2.email }}
+            </div>
+            <div class="input-field">
+                <p>나이:</p>
+                {{ form2.age }}
+            </div>
+            <input type="submit" class="btn" value="회원가입" name="register" />
+        </form>
+      </div>
+    </div>
+
+    <div class="panels-container">
+      <div class="panel left-panel">
+        <div class="content">
+          <h3>처음이신가요?</h3>
+          <p>
+            걱정 마세요. 회원가입 페이지로 이동하여 60초 내에 새 계정을 만들어보세요.
+          </p>
+          <button class="btn transparent" id="sign-up-btn">
+            회원가입
+          </button>
+        </div>
+        <img src="{% static 'log.svg'%}" class="image" alt="" />
+      </div>
+      <div class="panel right-panel">
+        <div class="content">
+          <h3>이미 회원이신가요?</h3>
+          <p>
+            로그인하여 시작하세요!
+          </p>
+          <button class="btn transparent" id="sign-in-btn">
+            로그인
+          </button>
+        </div>
+        <img src="{% static 'register.svg'%}" class="image" alt="" />
+      </div>
+    </div>
+  </div>
+  <script src="https://code.jquery.com/jquery-3.7.1.js" integrity="sha256-eKhayi8LEQwp4NKxN+CfCh+3qOVUtJn3QNZ0TciWLP4=" crossorigin="anonymous"></script>
+  <script>
+    $(document).ready(function () {
+        console.log('Document is ready');
+        const sign_in_btn = $("#sign-in-btn");
+        const sign_up_btn = $("#sign-up-btn");
+        const container = $(".container");
+
+        sign_up_btn.on("click", function () {
+            container.addClass("sign-up-mode");
+        });
+
+        sign_in_btn.on("click", function () {
+            container.removeClass("sign-up-mode");
+        });
+        $('#id_email').change(function(){
+            var email = $(this).val();
+            $.ajax({
+                url: '/check_email/',
+                data: {
+                  'email': email
+                },
+                dataType: 'json',
+                success: function (data) {
+                    console.log('Response received:', data);  // 응답 받은 데이터
+                    if (data.is_taken) {
+                        $('#id_email').next().next('.errorlist').remove();
+                        $('<div class="errorlist"><p class="error">이미 사용 중인 이메일입니다.</p></div>').appendTo('#id_email');
+                    } else {
+                        $('#id_email').next().next('.errorlist').remove();
+                        $('<div class="matchlist"><p class="match">사용 가능한 이메일입니다.</p></div>').appendTo('#id_email');
+                    }
+                },
+                error: function (xhr, status, error) {
+                    console.error('AJAX error:', error);  // 에러 로깅
+                }
+            });
+            console.log('AJAX request sent:', email);  // 요청 로깅
+        });
+
+
+
+
+        $(".sign-in-form input, .sign-up-form input").on("input", function () {
+            console.log('Input event occurred');
+            const input = $(this);
+            const value = input.val().trim();
+            const inputField = input.parent('.input-field');
+            let errorMessage = '';
+
+            if (input.attr('name') === 'id_username_register') {
+                // 아이디는 알파벳과 숫자만 허용
+                const regex = /^[a-zA-Z0-9]+$/;
+                if (!regex.test(value)) {
+                    errorMessage = '<div class="errorlist"><p class="error">아이디는 영어와 숫자만 허용됩니다.</p></div>';
+                } else if (value.length >= 4 && value === $('#id_password1').val().trim()) {
+                    errorMessage = '<div class="errorlist"><p class="error">아이디와 비밀번호는 4자 이상 동일할 수 없습니다.</p></div>';
+                }
+            } else if (input.attr('name') === 'password1') {
+                // 비밀번호는 8자 이상이며, 특수 문자를 포함해야 함
+                const regex = /^(?=.*[!@#$%^&*])[a-zA-Z0-9!@#$%^&*]{8,}$/;
+                if (!regex.test(value)) {
+                    errorMessage = '<div class="errorlist"><p class="error">비밀번호는 8자 이상이며, 특수 문자를 포함해야 합니다.</p></div>';
+                } else if (value.length >= 4 && value === $('#id_username_register').val().trim()) {
+                    errorMessage = '<div class="errorlist"><p class="error">아이디와 비밀번호는 4자 이상 동일할 수 없습니다.</p></div>';
+                }
+            } else if (input.attr('name') === 'password2') {
+                // 비밀번호와 비밀번호 확인 필드의 값이 일치하는지 확인
+                const password1 = $('.sign-up-form input[name="password1"]').val().trim();
+                const password2 = value; // 현재 input 필드의 값을 사용
+
+                if (password1 !== password2) {
+                    errorMessage = '<div class="errorlist"><p class="error">비밀번호가 일치하지 않습니다.</p></div>';
+                } else if (value.length >= 4 && value === $('#id_username_register').val().trim()) {
+                    errorMessage = '<div class="errorlist"><p class="error">아이디와 비밀번호는 4자 이상 동일할 수 없습니다.</p></div>';
+                }
+            } else if (input.attr('name') === 'email') {
+                // 이메일 유효성 검사
+                const regex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+                if (!regex.test(value)) {
+                    errorMessage = '<div class="errorlist"><p class="error">이메일 형식이 올바르지 않습니다.</p></div>';
+                }
+            }
+
+            // 오류 메시지가 이미 있으면 제거
+            inputField.next('.errorlist').remove();
+
+            if (errorMessage) {
+                // 오류 메시지가 있으면 추가
+                inputField.after(errorMessage);
+                console.log('Error message added');
+            }
+        });
+
+
+
+    });
+  </script>
+  <!-- <script>
+    const sign_in_btn = document.querySelector("#sign-in-btn");
+    const sign_up_btn = document.querySelector("#sign-up-btn");
+    const container = document.querySelector(".container");
+
+    sign_up_btn.addEventListener("click", () => {
+      container.classList.add("sign-up-mode");
+    });
+
+    sign_in_btn.addEventListener("click", () => {
+      container.classList.remove("sign-up-mode");
+    });
+  </script> -->
+</body>
+{% endblock %}

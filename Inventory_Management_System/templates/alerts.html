@@ -1,0 +1,30 @@
+{% extends "base.html" %} {% block title %}부족 알림 - IoT 기반 재고 조사/재고
+관리 SW{% endblock %} {% block content %}
+<div class="section-header">
+  <h1 class="h3 mb-1">재고 부족 알림</h1>
+  <p class="text-muted mb-0">
+    현재 수량이 최소 수량보다 낮은 상품과 관련 메시지를 확인합니다.
+  </p>
+</div>
+
+<div class="row g-3">
+  {% for alert in alerts %}
+  <div class="col-md-6 col-xl-4">
+    <div class="alert-card h-100">
+      <div class="d-flex justify-content-between align-items-start gap-3 mb-2">
+        <strong>{{ alert.product_id }}</strong>
+        <span class="badge text-bg-danger">부족</span>
+      </div>
+      <p class="mb-2">{{ alert.message }}</p>
+      <div class="small text-muted">{{ alert.created_at }}</div>
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12">
+    <div class="panel-card text-center text-muted py-5">
+      현재 등록된 부족 알림이 없습니다.
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,110 @@
+{% extends "base.html" %} {% block title %}재고 조회 및 입출고 - IoT 기반 재고
+조사/재고 관리 SW{% endblock %} {% block content %}
+<div class="section-header">
+  <h1 class="h3 mb-1">재고 조회 및 입고/출고</h1>
+  <p class="text-muted mb-0">
+    상품 ID를 직접 입력하거나, Raspberry Pi 카메라가 인식한 ID를 서버로 보내는
+    방식으로 사용할 수 있습니다.
+  </p>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="panel-card h-100">
+      <form method="post" enctype="multipart/form-data" class="stack-form">
+        <div>
+          <label class="form-label" for="product_id">상품 ID</label>
+          <input
+            class="form-control form-control-lg"
+            id="product_id"
+            name="product_id"
+            placeholder="스캔 결과 또는 수동 입력"
+            required
+          />
+        </div>
+        <div>
+          <label class="form-label" for="quantity">수량</label>
+          <input
+            class="form-control form-control-lg"
+            id="quantity"
+            name="quantity"
+            type="number"
+            min="1"
+            value="1"
+            required
+          />
+        </div>
+        <div>
+          <label class="form-label" for="action">처리</label>
+          <select class="form-select form-select-lg" id="action" name="action">
+            <option value="in">입고</option>
+            <option value="out">출고</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label" for="scan_image">QR/바코드 이미지</label>
+          <input
+            class="form-control form-control-lg scan-upload"
+            id="scan_image"
+            name="scan_image"
+            type="file"
+            accept="image/*"
+          />
+          <div class="form-hint mt-2">
+            이미지 파일을 올리면 scanner.py가 QR/바코드를 읽어 상품 ID를 대신
+            채웁니다.
+          </div>
+        </div>
+        <button class="btn btn-primary btn-lg touch-button" type="submit">
+          이미지/수동 입력 처리하기
+        </button>
+        <div class="small text-muted">
+          카메라 연동 시 scanner.py에서 QR/바코드 인식 후 /api/scan 으로 전달할
+          수 있습니다.
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    <div class="panel-card h-100">
+      <div class="table-responsive mobile-table-wrap">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>상품 ID</th>
+              <th>상품명</th>
+              <th>현재 재고</th>
+              <th>최소 수량</th>
+              <th>상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for product in products %}
+            <tr>
+              <td>{{ product.product_id }}</td>
+              <td>{{ product.name }}</td>
+              <td>{{ product.quantity }}</td>
+              <td>{{ product.min_quantity }}</td>
+              <td>
+                {% if product.quantity < product.min_quantity %}
+                <span class="badge text-bg-warning">부족</span>
+                {% else %}
+                <span class="badge text-bg-success">정상</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="5" class="text-center text-muted py-4">
+                등록된 상품이 없습니다.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

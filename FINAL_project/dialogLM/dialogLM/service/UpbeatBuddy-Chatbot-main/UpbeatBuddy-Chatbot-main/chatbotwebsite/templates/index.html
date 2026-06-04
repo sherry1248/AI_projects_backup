@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}
+Deep Dive
+{% endblock %}
+
+{% block content %}
+
+  <!-- 이 부분을 head 태그 내부나 body 태그의 맨 아래로 이동 -->
+  <link rel="stylesheet" type="text/css" href="{% static 'style.css' %}">
+  <!-- jQuery 추가 -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <!-- Bootstrap 추가 -->
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+
+<main>
+  <section class="left-sec">
+    <!-- <h2> 당신의 심리친구</h2> -->
+    <h1> mind mate</h1>
+    <p>우리는 당신을 위해 언제나 여기에 있습니다. 어떤 이야기든 들려주세요.</p>
+    <!-- <p>TECHIT AISCHOOL 9 FINAL PROJECT TEAM 5 DEEP DIVE</p> -->
+    <a href="/chatpage">
+      <button>
+        대화 시작
+      </button>
+    </a>
+  </section>
+
+  <section class="right-sec">
+    <figure>
+      <img src="{% static 'home.png' %}">
+    </figure>
+  </section>
+</main>
+
+{% endblock %}

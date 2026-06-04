@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}
+링크 업데이트
+{% endblock %}
+
+{% block content %}
+<main>
+  <link rel="stylesheet" type="text/css" href="{% static 'style1.css' %}">
+  <h3>만약 여러분이 이 메시지를 보고 있다면, 우리의 하나 이상의 API가 오프라인 상태일 수 있습니다.</h3>
+  <h3>API 링크를 얻고 아래에 붙여넣으려면 관리자/개발자에게 문의하십시오.</h3>
+  <hr>
+  {% if chatbotAPI %}
+  <h4>챗봇 API 상태: 작동 중 &#9989;</h4>
+  {% else %}
+  <h4>챗봇 API 상태: 작동 중이 아님 &#10060;</h4>
+  {% endif %}
+
+  {% if sentimentAPI %}
+  <h4>감정 분석 API 상태: 작동 중 &#9989;</h4>
+  {% else %}
+  <h4>감정 분석 API 상태: 작동 중이 아님 &#10060;</h4>
+  {% endif %}
+
+  <form action="{% url 'linkpage' %}" method="post">
+    {% csrf_token %}
+    <input type="text" name="chatbotLink" placeholder="챗봇 API 링크" style="width:80%"
+      style="float: inline-start;" />
+    <input type="text" name="sentimentLink" placeholder="감정 분석 API 링크" style="width:80%"
+      style="float: inline-start;" />
+    <br>
+    <input type="submit" class="btn-info " value="제출" name="Submit" style="float: inline-end;" />
+  </form>
+
+</main>
+{% endblock %}

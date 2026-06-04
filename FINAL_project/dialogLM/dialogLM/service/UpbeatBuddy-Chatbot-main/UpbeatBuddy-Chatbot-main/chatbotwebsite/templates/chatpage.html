@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}
+채팅 페이지
+{% endblock %}
+
+{% block content %}
+<main>
+  <link rel="stylesheet" type="text/css" href="{% static 'style1.css' %}">
+  <div class="container">
+    <div class="content">
+      <div class="conversation">
+        <div class="conversation-header">
+          <div class="conversation-contact">
+            <img src="{% static 'chatbot_logo.png' %}" alt="대화 상대 프로필">
+            <div class="conversation-contact-info">
+              <span class="conversation-name">Mind Mate</span>
+              <span class="conversation-online">온라인</span>
+            </div>
+          </div>
+        </div>
+        <div class="conversation-content">
+          <div class="messages">
+            <article class="message-container">
+              <img src="{% static 'chatbot_logo.png' %}" alt="메시지 이미지">
+              <div class="message">
+                <span>안녕하세요 {{request.user}}, 어떻게 지내요 ?</span>
+                <hr><span>{{now}}</span>
+              </div>
+            </article>
+            {% for item in chats %}
+            <article class="message-container sended">
+              <img src="{% static 'human_logo.png' %}" alt="메시지 이미지">
+              <div class="message">
+                <span>{{ item.0 }}</span>
+                <hr><span>{{ item.2 }}</span>
+              </div>
+            </article>
+            <article class="message-container">
+              <img src="{% static 'chatbot_logo.png' %}" alt="메시지 이미지">
+              <div class="message">
+                <span>{{ item.1 }}</span>
+                <hr><span>{{ item.2 }}</span>
+              </div>
+            </article>
+            {% endfor %}
+            <br>
+            <br>
+            <br>
+            <br>
+            <br>
+            <br><br>
+            <form id="chat-form" action="{% url 'chatpage' %}" method="POST">
+              <div class="conversation-editor">
+                  {% csrf_token %}
+                  <input type="text" name="userquery" placeholder="메시지를 입력하세요" style="width:240%; display: inline-block;" />
+                  <input type="submit" class="btn-info" value="전송" name="send" style="display: inline-block" />
+                  <input type="submit" id="sentiment-check-btn" class="btn-success" value="감정 확인" name="send" style="display: inline-block;">
+              </div>
+          </form>          
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sentiment-modal" class="modal">
+    <div class="modal-content">
+      <span class="close">&times;</span>
+      <div style="display: flex; align-items: center;">
+        <img id="character-image" src="https://raw.githubusercontent.com/shelly1248/bookbot/main/default.png" alt="감정 이미지" style="width: 100px; background-color: rgba(0, 0, 0, 0.1);">
+        <div style="margin-left: 20px;">
+          <p id="date" style="margin-top: 0;">날짜</p>
+          <h2 id="emotion-category" style="margin-bottom: 0; font-size: 16px;">감정 카테고리</h2>
+        </div>
+      </div>
+      <p id="sentiment-result"></p>
+      <canvas id="myChart" width="450" height="450"></canvas>
+      <button id="song-recommend-btn" style="margin: 10px 0;">노래 추천 받기</button>
+      <div class="swiper-container">
+        <div class="swiper-wrapper" id="song-recommendation">
+        </div>
+        <div class="swiper-button-next"></div>
+        <div class="swiper-button-prev"></div>
+      </div>
+    </div>
+  </div>
+
+
+
+  
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script src="https://unpkg.com/swiper/swiper-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+    var jq = $.noConflict();
+    window.addEventListener('unload', function() {
+      sessionStorage.clear();
+    });
+    jq(document).ready(function() {
+      var modal = document.getElementById('sentiment-modal');
+  
+      function scrollToBottom() {
+        jq('.messages').scrollTop(jq('.messages')[0].scrollHeight);
+      }
+  
+      function updateCharacterEmotion(sentimentsObj) {
+        var characterImageSrc;
+
+        // 감정에 따라 캐릭터 이미지 소스 변경
+        if (sentimentsObj['기쁨(행복한)']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EA%B8%B0%EC%81%A8_%ED%96%89%EB%B3%B5%ED%95%9C_-removebg-preview.png';
+        } else if (sentimentsObj['슬픔(우울한)']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%8A%AC%ED%94%94_%EC%9A%B0%EC%9A%B8%ED%95%9C_-removebg-preview.png';
+        } else if (sentimentsObj['즐거운(신나는)']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%A6%90%EA%B1%B0%EC%9A%B4_%EC%8B%A0%EB%82%98%EB%8A%94_-removebg-preview.png';
+        } else if (sentimentsObj['고마운']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EA%B3%A0%EB%A7%88%EC%9A%B4-removebg-preview.png';
+        } else if (sentimentsObj['일상적인']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%9D%BC%EC%83%81%EC%A0%81%EC%9D%B8-removebg-preview.png';
+        } else if (sentimentsObj['사랑하는']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%82%AC%EB%9E%91%ED%95%98%EB%8A%94-removebg-preview.png';
+        } else if (sentimentsObj['생각이 많은']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%83%9D%EA%B0%81%EC%9D%B4_%EB%A7%8E%EC%9D%80-removebg-preview.png';
+        } else if (sentimentsObj['설레는(기대하는)']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%84%A4%EB%A0%88%EB%8A%94_%EA%B8%B0%EB%8C%80%ED%95%98%EB%8A%94_-removebg-preview.png';
+        } else if (sentimentsObj['짜증남']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EC%A7%9C%EC%A6%9D%EB%82%A8-removebg-preview.png';
+        } else if (sentimentsObj['걱정스러운(불안한)']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%EA%B1%B1%EC%A0%95%EC%8A%A4%EB%9F%AC%EC%9A%B4_%EB%B6%88%EC%95%88%ED%95%9C_-removebg-preview.png';
+        } else if (sentimentsObj['힘듦(지침)']) {
+          characterImageSrc = 'https://raw.githubusercontent.com/shelly1248/bookbot/main/%ED%9E%98%EB%93%A6_%EC%A7%80%EC%B9%A8_-removebg-preview.png';
+        }
+
+        jq('#character-image').attr('src', characterImageSrc);
+      }
+      
+      // 감정 확인 버튼 클릭 이벤트
+      jq('#sentiment-check-btn').on('click', function(event) {
+        event.preventDefault();
+
+        // 오늘 날짜 표시
+        document.getElementById('date').innerText = new Date().toLocaleDateString('ko-KR', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        var sentiments = sessionStorage.getItem('sentiments');
+        console.log(sentiments)
+        if (sentiments && Object.keys(JSON.parse(sentiments)).length !== 0) {
+          updateCharacterEmotion(JSON.parse(sentiments));
+          var sortedSentiments = Object.entries(JSON.parse(sentiments)).sort((a, b) => b[1] - a[1]);
+          var top3Sentiments = sortedSentiments.slice(0, 3);
+          var sentimentText = top3Sentiments.map(function(sentiment) {
+            return `${sentiment[0]}: ${sentiment[1]}`;
+          }).join(', ');
+
+          
+
+          // 감정 카테고리에 대한 문장 매핑
+          var sentimentSentences = {
+            '기쁨(행복한)': '기쁜일이 있었나봐요? 기쁜 상태입니다.',
+            '즐거운(신나는)': '즐거운 하루였나요? 즐거운 상태입니다.',
+            '일상적인': '평범한 일상을 보내고 계십니다.',
+            '사랑하는': '사랑에 빠진 상태입니다.',
+            '생각이 많은': '생각이 많으시네요. 고민이 있나요?',
+            '설레는(기대하는)': '설레는 상태입니다.',
+            '짜증남': '화가 많으신 상태입니다. 맛있는거라도 드시는게 어떠실까요?',
+            '걱정스러운(불안한)': '걱정이 많으시네요.. 모든일이 잘 될테니 걱정하지말아요',
+            '힘듦(지침)': '휴식하셔야 될 것 같아요. 너무 지치셨습니다..',
+            '슬픔(우울한)': '슬픈일이 있었나요? 슬픈 상태입니다.',
+          };
+
+          var emotionCategory = top3Sentiments[0][0];
+          document.getElementById('emotion-category').innerText = sentimentSentences[emotionCategory] || emotionCategory;
+          var ctx = document.getElementById('myChart').getContext('2d');
+          var allSentiments = ['기쁨(행복한)', '즐거운(신나는)', '일상적인', '사랑하는', '생각이 많은', '설레는(기대하는)', '짜증남', '걱정스러운(불안한)', '힘듦(지침)', '슬픔(우울한)'];
+          // 감정 데이터 불러오기
+          var sentiments = sessionStorage.getItem('sentiments');
+          if (sentiments) {
+            sentiments = JSON.parse(sentiments);
+          } else {
+            sentiments = {};
+          }
+
+          // 모든 감정 카테고리에 대한 데이터 구성
+          var sentimentData = allSentiments.map(function(category) {
+            return sentiments[category] || 0;
+          });
+
+          // 레이더 차트 그리기
+          var myRadarChart = new Chart(ctx, {
+            type: 'radar',
+            data: {
+              labels: allSentiments,
+              datasets: [{
+                label: '나의 감정',
+                data: sentimentData
+              }]
+            },
+            options: {
+              responsive: false,
+              // maintainAspectRatio: true,
+              // aspectRatio: 1
+            }
+          });
+
+          modal.style.display = "block";
+        } else {
+          document.getElementById('sentiment-result').innerText = '감정 분석 결과가 없습니다.';
+          modal.style.display = "block";
+        }
+      });
+
+      var isRecommendationVisible = false;
+
+      jq('#song-recommend-btn').on('click', function(event) {
+        event.preventDefault();
+
+        if (isRecommendationVisible) {
+          document.getElementById('song-recommendation').style.display = 'none';
+          jq('#song-recommend-btn').text('노래 추천 받기');
+          isRecommendationVisible = false;
+        } else {
+          var sentiments = sessionStorage.getItem('sentiments');
+          if (sentiments) {
+            var sortedSentiments = Object.entries(JSON.parse(sentiments)).sort((a, b) => b[1] - a[1]);
+            var top3Sentiments = sortedSentiments.slice(0, 3);
+            var emotionCategory = top3Sentiments[0][0];
+
+            recommendSong(emotionCategory);
+            document.getElementById('song-recommendation').style.display = 'block';
+            jq('#song-recommend-btn').text('접기');
+            isRecommendationVisible = true;
+          } else {
+            document.getElementById('song-recommendation').innerText = '감정 분석 결과가 없어 노래를 추천할 수 없습니다.';
+            document.getElementById('song-recommendation').style.display = 'block';
+            jq('#song-recommend-btn').text('접기');
+            isRecommendationVisible = true;
+          }
+        }
+      });
+
+      jq('.close').on('click', function() {
+        modal.style.display = "none";
+        
+      });
+
+      function recommendSong(emotionCategory) {
+        var query = emotionCategory + '때 위로해주는 노래';
+        fetch('https://www.googleapis.com/youtube/v3/search?part=snippet&q=' + encodeURIComponent(query) + '&type=video&maxResults=4&key=AIzaSyDJHAeKILCcX_q5Mbg8mq-Uo8xES8fgchc')
+          .then(response => response.json())
+          .then(data => {
+            var recommendationHTML = data.items.map(item => {
+              var videoInfo = item.snippet;
+              var videoId = item.id.videoId;
+
+              return `
+                <div class="swiper-slide song-card">
+                  <a href="https://www.youtube.com/watch?v=${videoId}" target="_blank">
+                    <img class="thumbnail" src="${videoInfo.thumbnails.default.url}" alt="영상 썸네일">
+                    <h3>${videoInfo.title}</h3>
+                    <p>${videoInfo.channelTitle}</p>
+                  </a>
+                </div>
+              `;
+            }).join('');
+
+            var songRecommendation = document.getElementById('song-recommendation');
+            songRecommendation.innerHTML = recommendationHTML;
+
+            new Swiper('.swiper-container', {
+              direction: 'horizontal',  // 수평 방향 설정
+              navigation: {
+                nextEl: '.swiper-button-next',
+                prevEl: '.swiper-button-prev',
+              },
+              slidesPerView: 1,
+              spaceBetween: 10,
+            });
+
+          })
+          .catch(error => console.error('Error:', error));
+      }
+
+      jq('#chat-form').on('submit', function(event) {
+        event.preventDefault();
+
+        var userquery = jq('input[name="userquery"]').val();
+
+        jq('.messages').append(`
+          <article class="message-container sended">
+            <img src="{% static 'human_logo.png' %}" alt="메시지 이미지">
+            <div class="message">
+              <span>` + userquery + `</span>
+              <hr><span>` + new Date().toLocaleTimeString() + `</span>
+            </div>
+          </article>
+        `);
+
+        jq.ajax({
+          url: "{% url 'chatpage' %}",
+          type: "POST",
+          data: {
+            userquery: userquery,
+            csrfmiddlewaretoken: jq('input[name="csrfmiddlewaretoken"]').val(),
+            send: 'somevalue'
+          },
+          dataType: 'json',
+          success: function(data) {
+            jq('.messages').append(`
+              <article class="message-container">
+                <img src="{% static 'chatbot_logo.png' %}" alt="메시지 이미지">
+                <div class="message">
+                  <span>` + data.chat + `</span>
+                  <hr><span>` + new Date().toLocaleTimeString() + `</span>
+                </div>
+              </article>
+            `);
+
+            sessionStorage.setItem('chats', jq('.messages').html());
+            sessionStorage.setItem('sentiments', JSON.stringify(data.sentiments));
+            // sessionStorage.setItem('most_recent_sentiment', data.most_recent_sentiment);
+            console.log('가장 최근의 감정 상태: ' + data.most_recent_sentiment);
+            jq('input[name="userquery"]').val('');
+
+            scrollToBottom();
+          },
+          error: function(xhr, status, error) {
+            console.log("에러 상태:", status);
+            console.log("에러 내용:", error);
+          }
+        });
+      });
+    });
+</script>
+
+</main>
+{% endblock %}

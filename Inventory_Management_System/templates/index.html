@@ -1,0 +1,82 @@
+{% extends "base.html" %} {% block title %}메인 화면 - IoT 기반 재고 조사/재고
+관리 SW{% endblock %} {% block content %}
+<section class="hero-panel mb-4">
+  <div class="row align-items-center g-4">
+    <div class="col-lg-7">
+      <p class="eyebrow mb-2">Raspberry Pi 중심 프로토타입</p>
+      <h1 class="display-6 fw-bold mb-3">
+        모바일 브라우저에서도 바로 쓰는 간단한 재고 관리 흐름
+      </h1>
+      <p class="lead mb-4">
+        QR/바코드 또는 수동 입력으로 상품 ID를 받아 입고, 출고, 조회, 이력, 부족
+        알림만 설명 가능한 범위로 단순화한 과제용 웹 프로토타입입니다.
+      </p>
+      <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-primary btn-lg" href="{{ url_for('products') }}"
+          >상품 등록</a
+        >
+        <a
+          class="btn btn-outline-light btn-lg"
+          href="{{ url_for('inventory') }}"
+          >입고/출고</a
+        >
+        <a class="btn btn-outline-light btn-lg" href="{{ url_for('alerts') }}"
+          >부족 알림</a
+        >
+      </div>
+    </div>
+    <div class="col-lg-5">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span>등록 상품</span>
+          <strong>{{ counts.products }}</strong>
+        </div>
+        <div class="stat-card">
+          <span>부족 재고</span>
+          <strong>{{ counts.low_stock }}</strong>
+        </div>
+        <div class="stat-card">
+          <span>입출고 이력</span>
+          <strong>{{ counts.logs }}</strong>
+        </div>
+        <div class="stat-card">
+          <span>알림</span>
+          <strong>{{ counts.alerts }}</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="row g-3">
+  <div class="col-md-6 col-xl-3">
+    <div class="feature-card h-100">
+      <h2 class="h5">핵심 메뉴</h2>
+      <p>
+        상품 등록, 재고 조회, 입고/출고, 이력, 부족 알림으로 화면을
+        단순화했습니다.
+      </p>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="feature-card h-100">
+      <h2 class="h5">입력 방식</h2>
+      <p>카메라 기반 QR/바코드 인식 또는 상품 ID 수동 입력으로 동작합니다.</p>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="feature-card h-100">
+      <h2 class="h5">데이터 저장</h2>
+      <p>SQLite에 상품, 재고, 이력, 알림을 단순 테이블로 저장합니다.</p>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="feature-card h-100">
+      <h2 class="h5">접속 방식</h2>
+      <p>
+        PC에서 서버를 실행한 뒤 같은 Wi-Fi의 모바일 브라우저에서 접속합니다.
+      </p>
+    </div>
+  </div>
+</section>
+{% endblock %}
