@@ -14,6 +14,19 @@ from datetime import datetime
 from collections import defaultdict
 from pathlib import Path
 
+from src.memory.extractors import (
+    build_recent_memory_entry,
+    extract_emotional_states,
+    extract_fact_candidates,
+    extract_user_directives,
+)
+from src.memory.models import (
+    EmotionalStateEntry,
+    FactMemoryEntry,
+    MemoryContext,
+    RecentMemoryEntry,
+    UserDirective,
+)
 from src.privacy.pii_redactor import PIIRedactor
 from src.utils.logging_config import setup_logging
 
@@ -103,6 +116,11 @@ class MemoryStore:
         history = await store.get_history("session_123")
     """
 
+    STRUCTURED_RECENT_MAX_ITEMS = 20
+    STRUCTURED_FACT_MAX_ITEMS = 50
+    STRUCTURED_DIRECTIVE_MAX_ITEMS = 20
+    STRUCTURED_EMOTION_MAX_ITEMS = 30
+
     def __init__(self, config: Optional[MemoryConfig] = None):
         """
         Initialize memory store.
@@ -115,6 +133,10 @@ class MemoryStore:
         self._summaries: Dict[str, List[ConversationSummary]] = defaultdict(list)
         self._metadata: Dict[str, Dict[str, Any]] = defaultdict(dict)
         self._profiles: Dict[str, UserProfile] = {}
+        self._recent_entries: Dict[str, List[RecentMemoryEntry]] = defaultdict(list)
+        self._fact_entries: Dict[str, List[FactMemoryEntry]] = defaultdict(list)
+        self._directives: Dict[str, List[UserDirective]] = defaultdict(list)
+        self._emotional_states: Dict[str, List[EmotionalStateEntry]] = defaultdict(list)
         self._memory_redactor = PIIRedactor(mock_mode=True, use_presidio=False)
 
         if self.config.persist_path:
@@ -176,6 +198,180 @@ class MemoryStore:
             await self._persist_session(session_id)
 
         logger.debug(f"Added conversation turn to session {session_id}")
+
+    async def add_structured_memory(
+        self,
+        session_id: str,
+        masked_text: str,
+        risk_stage: str = "관심",
+        source: str = "message",
+    ) -> None:
+        """
+        Add structured memory candidates from already-masked text.
+
+        This is an opt-in API. It is intentionally not called by add(), so the
+        existing conversation-history behavior remains unchanged.
+        """
+        if not masked_text:
+            return
+
+        recent_entry = build_recent_memory_entry(
+            masked_text=masked_text,
+            session_id=session_id,
+            risk_stage=risk_stage,
+        )
+        fact_entries = extract_fact_candidates(
+            masked_text=masked_text,
+            session_id=session_id,
+        )
+        directives = extract_user_directives(
+            masked_text=masked_text,
+            session_id=session_id,
+        )
+        emotional_states = extract_emotional_states(
+            masked_text=masked_text,
+            session_id=session_id,
+            risk_stage=risk_stage,
+            source=source,
+        )
+
+        self._recent_entries[session_id].append(recent_entry)
+        self._merge_fact_entries(session_id, fact_entries)
+        self._merge_directives(session_id, directives)
+        self._emotional_states[session_id].extend(emotional_states)
+        self._trim_structured_memory(session_id)
+
+    async def get_memory_context(
+        self,
+        session_id: str,
+        max_recent: int = 5,
+        max_facts: int = 8,
+        max_directives: int = 5,
+        max_emotions: int = 5,
+    ) -> MemoryContext:
+        """Return structured memory layers for optional prompt use."""
+        return MemoryContext(
+            recent_summaries=await self.get_recent_memory(session_id, limit=max_recent),
+            facts=await self.get_fact_memory(session_id, limit=max_facts),
+            directives=await self.get_user_directives(
+                session_id,
+                active_only=True,
+                limit=max_directives,
+            ),
+            emotional_trend=await self.get_emotional_trend(session_id, limit=max_emotions),
+        )
+
+    async def get_recent_memory(
+        self,
+        session_id: str,
+        limit: int = 5,
+    ) -> List[RecentMemoryEntry]:
+        """Get recent structured summaries for a session."""
+        entries = self._recent_entries.get(session_id, [])
+        return list(entries[-limit:]) if limit else list(entries)
+
+    async def get_fact_memory(
+        self,
+        session_id: str,
+        limit: int = 8,
+        categories: Optional[List[str]] = None,
+    ) -> List[FactMemoryEntry]:
+        """Get structured fact candidates for a session."""
+        entries = self._fact_entries.get(session_id, [])
+        if categories:
+            category_set = set(categories)
+            entries = [entry for entry in entries if entry.category in category_set]
+        return list(entries[-limit:]) if limit else list(entries)
+
+    async def get_user_directives(
+        self,
+        session_id: str,
+        active_only: bool = True,
+        limit: int = 5,
+    ) -> List[UserDirective]:
+        """Get user directives for a session."""
+        entries = self._directives.get(session_id, [])
+        if active_only:
+            entries = [entry for entry in entries if entry.active]
+        return list(entries[-limit:]) if limit else list(entries)
+
+    async def get_emotional_trend(
+        self,
+        session_id: str,
+        limit: int = 5,
+    ) -> List[EmotionalStateEntry]:
+        """Get recent emotional state observations for a session."""
+        entries = self._emotional_states.get(session_id, [])
+        return list(entries[-limit:]) if limit else list(entries)
+
+    async def clear_structured_memory(self, session_id: str) -> None:
+        """Clear only the structured memory layers for a session."""
+        self._recent_entries.pop(session_id, None)
+        self._fact_entries.pop(session_id, None)
+        self._directives.pop(session_id, None)
+        self._emotional_states.pop(session_id, None)
+
+    def _merge_fact_entries(
+        self,
+        session_id: str,
+        new_facts: List[FactMemoryEntry],
+    ) -> None:
+        """Merge fact candidates by category and normalized value."""
+        entries = self._fact_entries[session_id]
+        by_key = {
+            (entry.category, entry.normalized_value): entry
+            for entry in entries
+        }
+
+        for fact in new_facts:
+            key = (fact.category, fact.normalized_value)
+            existing = by_key.get(key)
+            if existing:
+                existing.evidence_count += fact.evidence_count
+                existing.last_seen_at = fact.last_seen_at
+                existing.confidence = max(existing.confidence, fact.confidence)
+            else:
+                entries.append(fact)
+                by_key[key] = fact
+
+    def _merge_directives(
+        self,
+        session_id: str,
+        new_directives: List[UserDirective],
+    ) -> None:
+        """Merge user directives by kind and normalized term."""
+        entries = self._directives[session_id]
+        by_key = {
+            (entry.kind, entry.term): entry
+            for entry in entries
+        }
+
+        for directive in new_directives:
+            key = (directive.kind, directive.term)
+            existing = by_key.get(key)
+            if existing:
+                existing.hit_count += directive.hit_count
+                existing.active = existing.active or directive.active
+                if directive.expires_at:
+                    existing.expires_at = directive.expires_at
+            else:
+                entries.append(directive)
+                by_key[key] = directive
+
+    def _trim_structured_memory(self, session_id: str) -> None:
+        """Keep structured memory layers bounded in memory."""
+        self._recent_entries[session_id] = self._recent_entries[session_id][
+            -self.STRUCTURED_RECENT_MAX_ITEMS:
+        ]
+        self._fact_entries[session_id] = self._fact_entries[session_id][
+            -self.STRUCTURED_FACT_MAX_ITEMS:
+        ]
+        self._directives[session_id] = self._directives[session_id][
+            -self.STRUCTURED_DIRECTIVE_MAX_ITEMS:
+        ]
+        self._emotional_states[session_id] = self._emotional_states[session_id][
+            -self.STRUCTURED_EMOTION_MAX_ITEMS:
+        ]
 
     def _sanitize_for_memory(self, text: str) -> str:
         """Redact PII before storing text in memory."""
@@ -438,6 +634,7 @@ class MemoryStore:
             del self._metadata[session_id]
         if session_id in self._profiles:
             del self._profiles[session_id]
+        await self.clear_structured_memory(session_id)
 
         logger.info(f"Cleared session {session_id}")
 
