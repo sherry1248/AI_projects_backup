@@ -306,6 +306,25 @@ class PsychologistAgent:
 
             # Step 4: Get conversation history (separate for cloud and local)
             cloud_history, user_profile = await self.memory_store.get_cloud_context(session_id)
+            try:
+                memory_context = await self.memory_store.get_memory_context(session_id)
+                result["pipeline_details"]["memory_context"] = {
+                    "available": True,
+                    "recent_summaries": len(memory_context.recent_summaries),
+                    "facts": len(memory_context.facts),
+                    "directives": len([
+                        directive for directive in memory_context.directives
+                        if getattr(directive, "active", True)
+                    ]),
+                    "emotional_trend": len(memory_context.emotional_trend),
+                }
+            except Exception as exc:
+                logger.warning("Memory context unavailable: %s", exc)
+                memory_context = None
+                result["pipeline_details"]["memory_context"] = {
+                    "available": False,
+                    "error": type(exc).__name__,
+                }
 
             # Step 5: Cloud Analysis (Deepseek) with profile
             if self.config.enable_cloud_analysis:
@@ -313,7 +332,8 @@ class PsychologistAgent:
                     sanitized_input=sanitized_input,
                     rag_context=rag_context,
                     history=cloud_history,
-                    user_profile=user_profile.to_json() if user_profile else None
+                    user_profile=user_profile.to_json() if user_profile else None,
+                    memory_context=memory_context,
                 )
 
                 cloud_analysis = await self.cloud_client.analyze(
@@ -400,6 +420,7 @@ class PsychologistAgent:
                     "wellness_support_hint": wellness_recommendation.support_hint if wellness_recommendation else "",
                     "wellness_risk_stage": wellness_recommendation.risk_stage if wellness_recommendation else "",
                 } if wellness_recommendation else None,
+                memory_context=memory_context,
             )
 
             # Use create_chat_completion with messages list
