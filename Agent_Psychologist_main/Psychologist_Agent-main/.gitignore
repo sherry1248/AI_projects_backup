@@ -64,3 +64,10 @@ data/counseling/
 data/empathy/
 data/wellness/
 data/processed/*.jsonl
+
+# Large local datasets
+data/raw/
+data/counseling/
+data/empathy/
+data/wellness/
+data/processed/*.jsonl
