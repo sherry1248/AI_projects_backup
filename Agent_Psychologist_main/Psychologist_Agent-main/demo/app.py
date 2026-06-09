@@ -148,9 +148,6 @@ def build_general_markdown(summary: Dict[str, Any], response_text: str) -> str:
         [
             wrap_card("상담 응답 카드", f"- 위험 단계: {escape_text(risk_stage)}"),
             wrap_card("AI 상담 응답", safe_body_text(response_text)),
-            wrap_card("심리상담 데이터 기반 힌트", safe_body_text(summary.get("counseling_hint") or "없음")),
-            wrap_card("공감형 대화 기반 힌트", safe_body_text(summary.get("empathy_style_hint") or "없음")),
-            wrap_card("웰니스 기반 힌트", safe_body_text(summary.get("wellness_hint") or "없음")),
         ]
     )
 

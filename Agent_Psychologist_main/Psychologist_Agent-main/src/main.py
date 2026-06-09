@@ -491,11 +491,7 @@ class PsychologistAgent:
             return None
 
     def _merge_wellness_hint(self, response_text: str, support_hint: str) -> str:
-        if not support_hint or support_hint in response_text:
-            return response_text
-        if not response_text:
-            return support_hint
-        return f"{response_text}\n\n웰니스 참고: {support_hint}"
+        return response_text
 
     def _compose_mock_response(
         self,
@@ -503,13 +499,31 @@ class PsychologistAgent:
         empathy_style_hint: str,
         wellness_hint: str,
     ) -> str:
-        segments = ["지금의 상태를 함께 살펴보고 있어요."]
-        if counseling_hint:
-            segments.append(f"상담 참고: {counseling_hint}")
+        segments = [
+            "지금 느끼는 부담이 꽤 컸을 것 같아요.",
+            "이런 상태에서는 마음이 복잡해지고, 무엇부터 해야 할지 막막하게 느껴질 수 있습니다.",
+        ]
+
         if empathy_style_hint:
-            segments.append(f"공감 참고: {empathy_style_hint}")
-        if wellness_hint:
-            segments.append(f"웰니스 참고: {wellness_hint}")
+            segments[1] = (
+                "지금의 반응은 이상하거나 약한 것이 아니라, "
+                "많이 버텨온 마음이 보내는 신호일 수 있어요."
+            )
+
+        action_step = ""
+        for hint in (wellness_hint, counseling_hint):
+            if hint and hint.strip() and "제안하세요" not in hint:
+                action_step = hint.strip()
+                break
+
+        if not action_step:
+            action_step = "지금 당장 해결하려 하기보다, 오늘 할 수 있는 가장 작은 한 가지를 정해보세요."
+
+        segments.append(action_step)
+        segments.append(
+            "만약 스스로를 해치고 싶은 생각이 들거나 지금 안전하지 않다고 느껴진다면, "
+            "혼자 버티지 말고 109, 119, 112 또는 가까운 응급실/지역 정신건강복지센터에 바로 연결하세요."
+        )
         return "\n\n".join(segments)
 
     async def process_message_stream(

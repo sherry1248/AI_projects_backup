@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from src.inference.generator import GenerationResult
@@ -11,8 +12,57 @@ from src.wellness.dataset_loader import WellnessDatasetLoader
 from src.wellness.recommender import SAFE_SUPPORT_HINT, WellnessRecommender
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-RAW_SAMPLE_FILE = ROOT_DIR / "data" / "raw" / "wellness_sample.jsonl"
+def _write_raw_sample_dataset(tmp_path: Path) -> Path:
+    dataset_path = tmp_path / "wellness_sample.jsonl"
+    records = [
+        {
+            "id": "raw_1",
+            "question": "잠을 잘 못 자고 너무 지쳐요.",
+            "answer": "잠들기 전 화면 시간을 줄이고 호흡을 천천히 맞춰보세요.",
+            "topic": "sleep",
+            "risk_stage": "주의",
+        },
+        {
+            "id": "raw_2",
+            "question": "걱정이 많아서 불안해요.",
+            "answer": "걱정을 적어보고 지금 할 수 있는 한 가지를 정해보세요.",
+            "topic": "anxiety",
+            "risk_stage": "주의",
+        },
+        {
+            "id": "raw_3",
+            "question": "오늘은 식사도 잘 하고 기분이 괜찮아요.",
+            "answer": "지금의 균형을 이어가도록 작은 루틴을 유지해보세요.",
+            "topic": "general",
+            "risk_stage": "관심",
+        },
+        {
+            "id": "raw_4",
+            "question": "혼자 있는 시간이 길어 외로워요.",
+            "answer": "부담이 적은 사람에게 짧은 안부 메시지부터 보내보세요.",
+            "topic": "loneliness",
+            "risk_stage": "주의",
+        },
+        {
+            "id": "raw_5",
+            "question": "일 때문에 스트레스가 높아요.",
+            "answer": "업무를 작은 단위로 나누고 먼저 쉬는 시간을 확보해보세요.",
+            "topic": "work_stress",
+            "risk_stage": "주의",
+        },
+        {
+            "id": "raw_6",
+            "question": "지금 안전하지 않을까 봐 걱정돼요.",
+            "answer": "혼자 버티지 말고 즉시 주변 사람이나 긴급 도움에 연결하세요.",
+            "topic": "risk",
+            "risk_stage": "위험",
+        },
+    ]
+    dataset_path.write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    return dataset_path
 
 
 def _write_custom_dataset(tmp_path: Path) -> Path:
@@ -54,8 +104,8 @@ def _write_custom_dataset(tmp_path: Path) -> Path:
 
 
 class TestWellnessRecommender:
-    def test_loader_supports_raw_sample(self):
-        loader = WellnessDatasetLoader(RAW_SAMPLE_FILE)
+    def test_loader_supports_raw_sample(self, tmp_path):
+        loader = WellnessDatasetLoader(_write_raw_sample_dataset(tmp_path))
         records = loader.load_records()
 
         assert len(records) == 6
@@ -119,7 +169,7 @@ class TestWellnessRecommender:
         assert user_text not in dataset_path.read_text(encoding="utf-8")
         assert user_text not in recommendation.support_hint
 
-    def test_mock_response_includes_wellness_hint(self, tmp_path, monkeypatch):
+    def test_mock_response_uses_wellness_hint_without_internal_label(self, tmp_path, monkeypatch):
         dataset_path = _write_custom_dataset(tmp_path)
         agent = PsychologistAgent(
             config=AgentConfig(
@@ -157,8 +207,12 @@ class TestWellnessRecommender:
             )
         )
 
-        assert "웰니스 참고:" in result["response"]
+        assert result["wellness_hint"]
+        assert "웰니스 참고:" not in result["response"]
+        assert "상담 참고" not in result["response"]
+        assert "공감 참고" not in result["response"]
         assert "오늘은 해야 할 일을 아주 작은 단위로 나누고" in result["response"]
+        assert "109" in result["response"]
 
     def test_danger_priority_overrides_wellness_hint(self, tmp_path):
         dataset_path = _write_custom_dataset(tmp_path)
