@@ -57,3 +57,10 @@ logs/*
 # Configs containing secrets
 configs/api_config.yaml
 .env
+
+# Large local datasets
+data/raw/
+data/counseling/
+data/empathy/
+data/wellness/
+data/processed/*.jsonl
