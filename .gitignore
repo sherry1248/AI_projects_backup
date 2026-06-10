@@ -41,4 +41,8 @@ Thumbs.db
 .gradle/
 local.properties
 *.apk
-*.aab
+*.aab/reference_repos/
+
+# Reference repos
+reference_repos/
+/reference_repos/
