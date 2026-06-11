@@ -23,6 +23,7 @@ from src.agent.models import (
     validate_no_raw_fields,
 )
 from src.agent.planner import SmallActionPlanner, generate_small_action_plan
+from src.agent.recall import ProactiveRecallAgent, build_proactive_recall
 from src.agent.state import (
     EmotionalStateAgent,
     normalize_checkin_score,
@@ -48,6 +49,7 @@ __all__ = [
     "IntentLabel",
     "IntentSeverity",
     "ProactiveRecallResult",
+    "ProactiveRecallAgent",
     "RAW_TEXT_FIELD_NAMES",
     "SafetyAgentResult",
     "SessionDreamSummary",
@@ -56,6 +58,7 @@ __all__ = [
     "decide_action",
     "generate_followup_question",
     "generate_small_action_plan",
+    "build_proactive_recall",
     "validate_no_raw_fields",
     "classify_intent",
     "normalize_checkin_score",
