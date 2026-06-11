@@ -30,6 +30,7 @@ from src.agent.state import (
     summarize_emotional_state,
     update_emotional_state,
 )
+from src.agent.summary import SessionDreamSummaryBuilder, build_session_dream_summary
 
 
 __all__ = [
@@ -53,12 +54,14 @@ __all__ = [
     "RAW_TEXT_FIELD_NAMES",
     "SafetyAgentResult",
     "SessionDreamSummary",
+    "SessionDreamSummaryBuilder",
     "SmallActionPlan",
     "SmallActionPlanner",
     "decide_action",
     "generate_followup_question",
     "generate_small_action_plan",
     "build_proactive_recall",
+    "build_session_dream_summary",
     "validate_no_raw_fields",
     "classify_intent",
     "normalize_checkin_score",
