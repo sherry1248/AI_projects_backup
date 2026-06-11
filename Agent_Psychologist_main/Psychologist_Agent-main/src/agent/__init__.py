@@ -22,6 +22,7 @@ from src.agent.models import (
     SmallActionPlan,
     validate_no_raw_fields,
 )
+from src.agent.planner import SmallActionPlanner, generate_small_action_plan
 from src.agent.state import (
     EmotionalStateAgent,
     normalize_checkin_score,
@@ -51,8 +52,10 @@ __all__ = [
     "SafetyAgentResult",
     "SessionDreamSummary",
     "SmallActionPlan",
+    "SmallActionPlanner",
     "decide_action",
     "generate_followup_question",
+    "generate_small_action_plan",
     "validate_no_raw_fields",
     "classify_intent",
     "normalize_checkin_score",
