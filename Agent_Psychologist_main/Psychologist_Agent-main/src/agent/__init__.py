@@ -1,5 +1,6 @@
 """Agent pipeline schemas."""
 
+from src.agent.decision import DecisionAgent, decide_action
 from src.agent.intent import IntentAgent, classify_intent
 from src.agent.models import (
     ALL_AGENT_SCHEMAS,
@@ -20,15 +21,23 @@ from src.agent.models import (
     SmallActionPlan,
     validate_no_raw_fields,
 )
+from src.agent.state import (
+    EmotionalStateAgent,
+    normalize_checkin_score,
+    summarize_emotional_state,
+    update_emotional_state,
+)
 
 
 __all__ = [
     "ALL_AGENT_SCHEMAS",
     "DatasetStrategyResult",
     "DecisionAction",
+    "DecisionAgent",
     "DecisionAgentResult",
     "EmotionAgentResult",
     "EmotionLabel",
+    "EmotionalStateAgent",
     "EmotionalStateVector",
     "IntentAgentResult",
     "IntentAgent",
@@ -40,6 +49,10 @@ __all__ = [
     "SafetyAgentResult",
     "SessionDreamSummary",
     "SmallActionPlan",
+    "decide_action",
     "validate_no_raw_fields",
     "classify_intent",
+    "normalize_checkin_score",
+    "summarize_emotional_state",
+    "update_emotional_state",
 ]
