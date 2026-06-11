@@ -10,6 +10,13 @@ import asyncio
 from typing import Optional, Dict, Any, List, AsyncIterator
 from dataclasses import dataclass
 
+from src.agent.decision import decide_action
+from src.agent.followup import generate_followup_question
+from src.agent.intent import classify_intent
+from src.agent.models import DecisionAction, EmotionalStateVector
+from src.agent.planner import generate_small_action_plan
+from src.agent.recall import build_proactive_recall
+from src.agent.state import summarize_emotional_state, update_emotional_state
 from src.safety.gateway import SafetyGateway, SafetyResult
 from src.safety.patterns import RiskLevel
 from src.privacy.pii_redactor import PIIRedactor, RedactionResult
@@ -161,6 +168,13 @@ class PsychologistAgent:
             "wellness_hint": "",
         }
         wellness_recommendation: Optional[WellnessRecommendation] = None
+        memory_context = None
+        intent_result = None
+        emotional_state = EmotionalStateVector()
+        proactive_recall = None
+        decision_result = None
+        followup_question = ""
+        small_action_plan = None
 
         try:
             # Step 1: Safety Gateway Check
@@ -229,6 +243,12 @@ class PsychologistAgent:
                 result["risk_level"] = risk_assessment.risk_level.value
                 result["risk_stage"] = risk_assessment.risk_stage
 
+            result["pipeline_details"].setdefault("agents", {})
+            intent_result = classify_intent(user_input)
+            result["pipeline_details"]["agents"]["intent"] = self._serialize_intent_agent(
+                intent_result
+            )
+
             counseling_recommendation = self.counseling_retriever.recommend(user_input)
             empathy_recommendation = self.empathy_retriever.recommend(user_input)
             result["counseling_hint"] = counseling_recommendation.intervention_hint
@@ -237,16 +257,115 @@ class PsychologistAgent:
             wellness_recommendation = self._get_wellness_recommendation(wellness_checkin)
             if wellness_recommendation:
                 result["wellness_hint"] = wellness_recommendation.support_hint
-                result["pipeline_details"]["wellness"] = wellness_recommendation.to_dict()
+                result["pipeline_details"]["wellness"] = self._safe_wellness_details(
+                    wellness_recommendation
+                )
 
-            result["pipeline_details"]["counseling"] = counseling_recommendation.to_dict()
-            result["pipeline_details"]["empathy"] = empathy_recommendation.to_dict()
+            result["pipeline_details"]["counseling"] = self._safe_counseling_details(
+                counseling_recommendation
+            )
+            result["pipeline_details"]["empathy"] = self._safe_empathy_details(
+                empathy_recommendation
+            )
+
+            try:
+                memory_context = await self.memory_store.get_memory_context(session_id)
+                result["pipeline_details"]["memory_context"] = {
+                    "available": True,
+                    "recent_summaries": len(memory_context.recent_summaries),
+                    "facts": len(memory_context.facts),
+                    "directives": len([
+                        directive for directive in memory_context.directives
+                        if getattr(directive, "active", True)
+                    ]),
+                    "emotional_trend": len(memory_context.emotional_trend),
+                }
+            except Exception as exc:
+                logger.warning("Memory context unavailable: %s", exc)
+                memory_context = None
+                result["pipeline_details"]["memory_context"] = {
+                    "available": False,
+                    "error": type(exc).__name__,
+                }
+
+            emotional_state = update_emotional_state(
+                previous_state=None,
+                intent_result=intent_result,
+                risk_stage=result["risk_stage"],
+                wellness_checkin=wellness_checkin,
+            )
+            result["pipeline_details"]["agents"]["emotional_state"] = (
+                self._serialize_emotional_state_agent(emotional_state)
+            )
+
+            proactive_recall = build_proactive_recall(memory_context=memory_context)
+            result["pipeline_details"]["agents"]["memory_recall"] = (
+                self._serialize_memory_recall_agent(proactive_recall)
+            )
+
+            decision_result = decide_action(
+                risk_stage=result["risk_stage"],
+                requires_crisis_response=result["requires_crisis_response"],
+                intent_result=intent_result,
+                emotional_state=emotional_state,
+                counseling_hint=result["counseling_hint"],
+                empathy_style_hint=result["empathy_style_hint"],
+                wellness_hint=result["wellness_hint"],
+                memory_context=memory_context,
+                proactive_recall=proactive_recall,
+            )
+            result["pipeline_details"]["agents"]["decision"] = (
+                self._serialize_decision_agent(decision_result)
+            )
+
+            if (
+                decision_result.primary_action == DecisionAction.ASK_FOLLOW_UP
+                or decision_result.response_constraints.get("must_include_followup") is True
+            ):
+                followup_question = generate_followup_question(
+                    intent_result=intent_result,
+                    decision_result=decision_result,
+                    emotional_state=emotional_state,
+                    risk_stage=result["risk_stage"],
+                    avoid_topics=decision_result.response_constraints.get("avoid_topics", []),
+                )
+
+            result["pipeline_details"]["agents"]["followup"] = {
+                "has_question": bool(followup_question),
+                "question_type": intent_result.primary_intent.name if intent_result else "",
+                "question": followup_question,
+            }
+
+            should_plan_small_action = (
+                DecisionAction.SUGGEST_SMALL_ACTION in decision_result.secondary_actions
+                or bool(result["wellness_hint"])
+            )
+            if (
+                should_plan_small_action
+                and result["risk_stage"] != "위험"
+                and decision_result.primary_action != DecisionAction.ESCALATE_SAFETY
+            ):
+                small_action_plan = generate_small_action_plan(
+                    session_id=session_id,
+                    intent_result=intent_result,
+                    decision_result=decision_result,
+                    emotional_state=emotional_state,
+                    wellness_hint=result["wellness_hint"],
+                    counseling_hint=result["counseling_hint"],
+                    risk_stage=result["risk_stage"],
+                )
+
+            result["pipeline_details"]["agents"]["small_action"] = (
+                self._serialize_small_action_agent(small_action_plan)
+            )
 
             if self.mock_mode:
                 response_text = self._compose_mock_response(
                     counseling_recommendation.intervention_hint,
                     empathy_recommendation.empathy_style_hint,
                     wellness_recommendation.support_hint if wellness_recommendation else "",
+                    followup_question=followup_question,
+                    small_action_text=small_action_plan.action_text if small_action_plan else "",
                 )
                 result["response"] = self._add_safety_notice(response_text)
 
@@ -258,7 +377,9 @@ class PsychologistAgent:
 
             wellness_recommendation = self._get_wellness_recommendation(wellness_checkin)
             if wellness_recommendation:
-                result["pipeline_details"]["wellness"] = wellness_recommendation.to_dict()
+                result["pipeline_details"]["wellness"] = self._safe_wellness_details(
+                    wellness_recommendation
+                )
 
             # Step 2: PII Redaction
             if self.config.enable_pii_redaction:
@@ -306,25 +427,6 @@ class PsychologistAgent:
 
             # Step 4: Get conversation history (separate for cloud and local)
             cloud_history, user_profile = await self.memory_store.get_cloud_context(session_id)
-            try:
-                memory_context = await self.memory_store.get_memory_context(session_id)
-                result["pipeline_details"]["memory_context"] = {
-                    "available": True,
-                    "recent_summaries": len(memory_context.recent_summaries),
-                    "facts": len(memory_context.facts),
-                    "directives": len([
-                        directive for directive in memory_context.directives
-                        if getattr(directive, "active", True)
-                    ]),
-                    "emotional_trend": len(memory_context.emotional_trend),
-                }
-            except Exception as exc:
-                logger.warning("Memory context unavailable: %s", exc)
-                memory_context = None
-                result["pipeline_details"]["memory_context"] = {
-                    "available": False,
-                    "error": type(exc).__name__,
-                }
 
             # Step 5: Cloud Analysis (Deepseek) with profile
             if self.config.enable_cloud_analysis:
@@ -417,9 +519,11 @@ class PsychologistAgent:
                 history=local_history,
                 therapeutic_guidance=wellness_recommendation.support_hint if wellness_recommendation else "",
                 additional_context={
-                    "wellness_support_hint": wellness_recommendation.support_hint if wellness_recommendation else "",
+                    "counseling_hint": counseling_recommendation.intervention_hint,
+                    "empathy_style_hint": empathy_recommendation.empathy_style_hint,
+                    "wellness_hint": wellness_recommendation.support_hint if wellness_recommendation else "",
                     "wellness_risk_stage": wellness_recommendation.risk_stage if wellness_recommendation else "",
-                } if wellness_recommendation else None,
+                },
                 memory_context=memory_context,
             )
 
@@ -465,6 +569,114 @@ class PsychologistAgent:
             return "주의"
         return "관심"
 
+    def _enum_name(self, value: Any) -> str:
+        return getattr(value, "name", str(value))
+
+    def _safe_counseling_details(
+        self,
+        recommendation: CounselingRecommendation,
+    ) -> Dict[str, Any]:
+        return {
+            "matched_record_id": getattr(recommendation, "matched_record_id", ""),
+            "category": getattr(recommendation, "category", "general"),
+            "score": getattr(recommendation, "score", 0.0),
+            "hint_present": bool(getattr(recommendation, "intervention_hint", "")),
+        }
+
+    def _safe_empathy_details(
+        self,
+        recommendation: EmpathyRecommendation,
+    ) -> Dict[str, Any]:
+        return {
+            "emotion_label": getattr(recommendation, "emotion_label", ""),
+            "empathy_label": getattr(recommendation, "empathy_label", ""),
+            "matched_record_id": getattr(recommendation, "matched_record_id", ""),
+            "score": getattr(recommendation, "score", 0.0),
+            "hint_present": bool(getattr(recommendation, "empathy_style_hint", "")),
+        }
+
+    def _safe_wellness_details(
+        self,
+        recommendation: WellnessRecommendation,
+    ) -> Dict[str, Any]:
+        return {
+            "risk_stage": getattr(recommendation, "risk_stage", "관심"),
+            "matched_record_id": getattr(recommendation, "matched_record_id", ""),
+            "matched_topic": getattr(recommendation, "matched_topic", ""),
+            "distance": getattr(recommendation, "distance", 0.0),
+            "hint_present": bool(getattr(recommendation, "support_hint", "")),
+        }
+
+    def _serialize_intent_agent(self, intent_result: Any) -> Dict[str, Any]:
+        labels = []
+        for candidate in getattr(intent_result, "candidates", []) or []:
+            label = getattr(candidate, "label", None)
+            label_name = self._enum_name(label)
+            if label_name and label_name not in labels:
+                labels.append(label_name)
+
+        primary = getattr(intent_result, "primary_intent", "")
+        primary_name = self._enum_name(primary)
+        if primary_name and primary_name not in labels:
+            labels.insert(0, primary_name)
+
+        return {
+            "primary_intent": primary_name,
+            "labels": labels,
+            "s2_suspected": bool(getattr(intent_result, "s2_suspected", False)),
+            "s3_sos": bool(getattr(intent_result, "s3_sos", False)),
+            "confidence": round(float(getattr(intent_result, "confidence", 0.0)), 4),
+        }
+
+    def _serialize_emotional_state_agent(
+        self,
+        emotional_state: EmotionalStateVector,
+    ) -> Dict[str, Any]:
+        data = {
+            key: round(float(value), 4)
+            for key, value in emotional_state.to_dict().items()
+        }
+        data["state_summary"] = summarize_emotional_state(emotional_state)
+        return data
+
+    def _serialize_memory_recall_agent(self, proactive_recall: Any) -> Dict[str, Any]:
+        return {
+            "recalled_keys": list(getattr(proactive_recall, "recalled_keys", []) or []),
+            "repeated_concerns": list(getattr(proactive_recall, "repeated_concerns", []) or []),
+            "has_last_small_action": bool(getattr(proactive_recall, "last_small_action", "")),
+            "has_next_follow_up": bool(getattr(proactive_recall, "next_follow_up", "")),
+            "stale": bool(getattr(proactive_recall, "stale", False)),
+        }
+
+    def _serialize_decision_agent(self, decision_result: Any) -> Dict[str, Any]:
+        return {
+            "primary_action": self._enum_name(getattr(decision_result, "primary_action", "")),
+            "secondary_actions": [
+                self._enum_name(action)
+                for action in getattr(decision_result, "secondary_actions", []) or []
+            ],
+            "reason_codes": list(getattr(decision_result, "reason_codes", []) or []),
+            "response_constraints": dict(getattr(decision_result, "response_constraints", {}) or {}),
+        }
+
+    def _serialize_small_action_agent(
+        self,
+        small_action_plan: Any,
+    ) -> Dict[str, Any]:
+        if small_action_plan is None:
+            return {
+                "has_action": False,
+                "action_id": "",
+                "intent_label": "",
+                "status": "",
+            }
+        return {
+            "has_action": bool(getattr(small_action_plan, "action_text", "")),
+            "action_id": getattr(small_action_plan, "action_id", ""),
+            "intent_label": str(getattr(small_action_plan, "intent_label", "")).upper(),
+            "status": getattr(small_action_plan, "status", ""),
+        }
+
     def _add_safety_notice(self, response_text: str) -> str:
         """Append a short safety notice to normal responses."""
         notice = (
@@ -498,6 +710,8 @@ class PsychologistAgent:
         counseling_hint: str,
         empathy_style_hint: str,
         wellness_hint: str,
+        followup_question: str = "",
+        small_action_text: str = "",
     ) -> str:
         segments = [
             "지금 느끼는 부담이 꽤 컸을 것 같아요.",
@@ -520,10 +734,10 @@ class PsychologistAgent:
             action_step = "지금 당장 해결하려 하기보다, 오늘 할 수 있는 가장 작은 한 가지를 정해보세요."
 
         segments.append(action_step)
-        segments.append(
-            "만약 스스로를 해치고 싶은 생각이 들거나 지금 안전하지 않다고 느껴진다면, "
-            "혼자 버티지 말고 109, 119, 112 또는 가까운 응급실/지역 정신건강복지센터에 바로 연결하세요."
-        )
+        if followup_question:
+            segments.append(followup_question)
+        if small_action_text:
+            segments.append(f"오늘의 작은 행동으로는 {small_action_text}")
         return "\n\n".join(segments)
 
     async def process_message_stream(
