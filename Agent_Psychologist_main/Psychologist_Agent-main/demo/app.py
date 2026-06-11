@@ -5,16 +5,18 @@ from __future__ import annotations
 import html
 import os
 import socket
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 os.environ.setdefault("LLM_TYPE", "MOCK")
 
-from src.main import PsychologistAgent
 from src.utils.logging_config import setup_logging
+
+if TYPE_CHECKING:
+    from src.main import PsychologistAgent
 
 logger = setup_logging("demo_app")
 
-agent: Optional[PsychologistAgent] = None
+agent: Optional["PsychologistAgent"] = None
 current_session_id: Optional[str] = None
 
 RISK_KEYWORDS = (
@@ -24,17 +26,51 @@ RISK_KEYWORDS = (
     "사라지고 싶",
 )
 
+RAW_LOOKING_KEYS = {
+    "raw_text",
+    "raw_input",
+    "user_input",
+    "assistant_response",
+    "conversation",
+    "content",
+    "transcript",
+    "message",
+    "source_conversation",
+}
 
-async def get_agent() -> PsychologistAgent:
+INTERNAL_HINT_LABELS = (
+    "상담 참고",
+    "공감 참고",
+    "웰니스 참고",
+    "심리상담 데이터 기반 힌트",
+    "공감형 대화 기반 힌트",
+    "웰니스 기반 힌트",
+)
+
+AGENT_SECTION_TITLES = (
+    "Safety Agent",
+    "Emotion Agent",
+    "Intent Agent",
+    "Dataset Strategy Agent",
+    "Memory Agent / Proactive Recall",
+    "Emotional State Agent",
+    "Decision Agent",
+    "Response Agent",
+)
+
+
+async def get_agent() -> "PsychologistAgent":
     global agent
     if agent is None:
+        from src.main import PsychologistAgent
+
         agent = PsychologistAgent()
         await agent.initialize()
         logger.info("Agent initialized for demo")
     return agent
 
 
-async def get_session_id(active_agent: PsychologistAgent) -> str:
+async def get_session_id(active_agent: "PsychologistAgent") -> str:
     global current_session_id
     if current_session_id is None:
         session = await active_agent.session_manager.create_session()
@@ -57,6 +93,214 @@ def safe_body_text(value: Any) -> str:
 def wrap_card(title: str, body_md: str, crisis: bool = False) -> str:
     card_class = "output-card crisis" if crisis else "output-card"
     return f"<div class='{card_class}'>\n\n## {escape_text(title)}\n\n{body_md}\n\n</div>"
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_key_value(key: str, value: Any) -> Optional[str]:
+    if key in RAW_LOOKING_KEYS:
+        return None
+    if isinstance(value, bool):
+        return f"{key}: {value}"
+    if isinstance(value, (int, float)):
+        return f"{key}: {value}"
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned or len(cleaned) > 80 or "\n" in cleaned:
+            return None
+        if any(label in cleaned for label in INTERNAL_HINT_LABELS):
+            return None
+        return f"{key}: {escape_text(cleaned)}"
+    return None
+
+
+def _safe_list(values: Any, *, max_items: int = 6) -> List[str]:
+    if not isinstance(values, list):
+        return []
+
+    safe_values: List[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        if not cleaned or len(cleaned) > 80 or "\n" in cleaned:
+            continue
+        if cleaned in RAW_LOOKING_KEYS:
+            continue
+        safe_values.append(escape_text(cleaned))
+        if len(safe_values) >= max_items:
+            break
+    return safe_values
+
+
+def _bool_from_presence(value: Any) -> bool:
+    return bool(value) if not isinstance(value, dict) else bool(value.keys())
+
+
+def _agent_details(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    details = _as_dict((result or {}).get("pipeline_details", {}))
+    return _as_dict(details.get("agents", {}))
+
+
+def _pipeline_details(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return _as_dict((result or {}).get("pipeline_details", {}))
+
+
+def _section(title: str, lines: List[str]) -> str:
+    body = "\n".join(f"- {line}" for line in lines if line) or "- not available"
+    return f"### {title}\n{body}"
+
+
+def _extract_labels(agent_data: Dict[str, Any]) -> List[str]:
+    labels = _safe_list(agent_data.get("labels"))
+    if labels:
+        return labels
+
+    candidates = agent_data.get("candidates")
+    if isinstance(candidates, list):
+        extracted = []
+        for candidate in candidates:
+            candidate_dict = _as_dict(candidate)
+            label = candidate_dict.get("label")
+            if isinstance(label, str):
+                extracted.append(label)
+        return _safe_list(extracted)
+
+    secondary = _safe_list(agent_data.get("secondary_labels"))
+    primary = agent_data.get("primary_label") or agent_data.get("primary_intent")
+    if isinstance(primary, str):
+        return _safe_list([primary] + secondary)
+    return secondary
+
+
+def _dataset_lines(summary: Dict[str, Any], result: Optional[Dict[str, Any]]) -> List[str]:
+    details = _pipeline_details(result)
+    hint_keys = []
+    for key in ("counseling_hint", "empathy_style_hint", "wellness_hint"):
+        if summary.get(key) or (result or {}).get(key):
+            hint_keys.append(key)
+
+    lines = [f"hint_keys: {', '.join(hint_keys) if hint_keys else 'none'}"]
+    for source_key in ("counseling", "empathy", "wellness"):
+        source = _as_dict(details.get(source_key))
+        category = source.get("category") or source.get("matched_category")
+        score = source.get("score") or source.get("similarity_score") or source.get("confidence")
+        matched_record_id = source.get("matched_record_id")
+        safe_parts = []
+        if isinstance(category, str) and len(category) <= 80:
+            safe_parts.append(f"category={escape_text(category)}")
+        if isinstance(score, (int, float)):
+            safe_parts.append(f"score={score}")
+        if isinstance(matched_record_id, str) and matched_record_id:
+            safe_parts.append(f"record_id_present=True")
+        if safe_parts:
+            lines.append(f"{source_key}: " + ", ".join(safe_parts))
+    return lines
+
+
+def build_agent_pipeline_markdown(
+    summary: Dict[str, Any],
+    result: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Build a raw-text-safe Agent Pipeline View markdown block."""
+    summary = summary or {}
+    result = result or {}
+    details = _pipeline_details(result)
+    agents = _agent_details(result)
+
+    safety = _as_dict(agents.get("safety")) or _as_dict(details.get("safety"))
+    emotion = _as_dict(agents.get("emotion"))
+    intent = _as_dict(agents.get("intent"))
+    memory = _as_dict(agents.get("recall")) or _as_dict(agents.get("memory")) or _as_dict(details.get("memory_context"))
+    state = _as_dict(agents.get("state")) or _as_dict(agents.get("emotional_state"))
+    decision = _as_dict(agents.get("decision"))
+
+    safety_lines = [
+        _safe_key_value("risk_stage", safety.get("risk_stage", summary.get("risk_stage", "관심"))),
+        _safe_key_value(
+            "requires_crisis_response",
+            safety.get("requires_crisis_response", summary.get("requires_crisis_response", False)),
+        ),
+        _safe_key_value("risk_level", safety.get("risk_level", summary.get("risk_level", "none"))),
+    ]
+
+    emotion_labels = _extract_labels(emotion)
+    emotion_lines = [
+        _safe_key_value("dominant_label", emotion.get("dominant_label") or emotion.get("primary_label")),
+        f"labels: {', '.join(emotion_labels) if emotion_labels else 'none'}",
+        _safe_key_value("labels_count", len(emotion_labels)),
+        _safe_key_value("intensity", emotion.get("intensity")),
+        _safe_key_value("confidence", emotion.get("confidence")),
+    ]
+
+    intent_labels = _extract_labels(intent)
+    intent_lines = [
+        _safe_key_value("primary_intent", intent.get("primary_intent")),
+        _safe_key_value("s2_suspected", intent.get("s2_suspected")),
+        _safe_key_value("s3_sos", intent.get("s3_sos")),
+        f"labels: {', '.join(intent_labels) if intent_labels else 'none'}",
+    ]
+
+    memory_counts = []
+    for key in ("recent_summaries", "facts", "directives", "emotional_trend"):
+        value = memory.get(key)
+        if isinstance(value, int):
+            memory_counts.append(f"{key}={value}")
+        elif isinstance(value, list):
+            memory_counts.append(f"{key}={len(value)}")
+    recalled_keys = _safe_list(memory.get("recalled_keys"))
+    repeated_concerns = _safe_list(memory.get("repeated_concerns"))
+    memory_lines = [
+        f"memory_context_count: {', '.join(memory_counts) if memory_counts else 'none'}",
+        f"recalled_keys: {', '.join(recalled_keys) if recalled_keys else 'none'}",
+        f"repeated_concerns: {', '.join(repeated_concerns) if repeated_concerns else 'none'}",
+        _safe_key_value("last_small_action_present", _bool_from_presence(memory.get("last_small_action"))),
+        _safe_key_value("next_follow_up_present", _bool_from_presence(memory.get("next_follow_up"))),
+    ]
+
+    state_summary = _safe_list(state.get("state_summary"))
+    state_lines = [
+        f"state_summary: {', '.join(state_summary) if state_summary else 'none'}",
+    ]
+    for key in ("mood", "anxiety", "stress", "sleep", "energy", "safety", "rapport"):
+        state_lines.append(_safe_key_value(key, state.get(key)))
+
+    secondary_actions = _safe_list(decision.get("secondary_actions"))
+    reason_codes = _safe_list(decision.get("reason_codes"))
+    constraints = _as_dict(decision.get("response_constraints"))
+    constraint_lines = []
+    for key in sorted(constraints.keys()):
+        rendered = _safe_key_value(key, constraints.get(key))
+        if rendered:
+            constraint_lines.append(rendered)
+    decision_lines = [
+        _safe_key_value("primary_action", decision.get("primary_action") or decision.get("action")),
+        f"secondary_actions: {', '.join(secondary_actions) if secondary_actions else 'none'}",
+        f"reason_codes: {', '.join(reason_codes) if reason_codes else 'none'}",
+        f"response_constraints: {', '.join(constraint_lines) if constraint_lines else 'none'}",
+    ]
+
+    response_lines = [
+        _safe_key_value("response_generated", bool(result.get("response") or summary.get("response_preview"))),
+        _safe_key_value("safety_notice_added", bool(summary.get("requires_crisis_response"))),
+        _safe_key_value("mode", result.get("response_source") or summary.get("response_source")),
+    ]
+
+    sections = [
+        _section("Safety Agent", safety_lines),
+        _section("Emotion Agent", emotion_lines),
+        _section("Intent Agent", intent_lines),
+        _section("Dataset Strategy Agent", _dataset_lines(summary, result)),
+        _section("Memory Agent / Proactive Recall", memory_lines),
+        _section("Emotional State Agent", state_lines),
+        _section("Decision Agent", decision_lines),
+        _section("Response Agent", response_lines),
+    ]
+    return wrap_card("Agent Pipeline View", "\n\n".join(sections))
 
 
 def build_crisis_markdown() -> str:
@@ -142,12 +386,17 @@ def build_mock_summary(
     }
 
 
-def build_general_markdown(summary: Dict[str, Any], response_text: str) -> str:
+def build_general_markdown(
+    summary: Dict[str, Any],
+    response_text: str,
+    result: Optional[Dict[str, Any]] = None,
+) -> str:
     risk_stage = summary.get("risk_stage", "관심")
     return "\n\n".join(
         [
             wrap_card("상담 응답 카드", f"- 위험 단계: {escape_text(risk_stage)}"),
             wrap_card("AI 상담 응답", safe_body_text(response_text)),
+            build_agent_pipeline_markdown(summary, result),
         ]
     )
 
@@ -253,7 +502,7 @@ async def handle_chat(
         if summary.get("requires_crisis_response"):
             return build_crisis_markdown(), summary
 
-        return build_general_markdown(summary, response_text), summary
+        return build_general_markdown(summary, response_text, result), summary
 
     except Exception as exc:
         logger.exception("Agent path failed, using mock fallback")
