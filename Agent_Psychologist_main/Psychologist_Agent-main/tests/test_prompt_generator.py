@@ -15,6 +15,13 @@ from src.prompt.generator import (
     CloudPrompt, LocalPrompt
 )
 from src.prompt.templates import TemplateLoader, PromptTemplate, DEFAULT_TEMPLATES
+from src.memory.models import (
+    EmotionalStateEntry,
+    FactMemoryEntry,
+    MemoryContext,
+    RecentMemoryEntry,
+    UserDirective,
+)
 
 
 class TestPromptTemplate:
@@ -137,6 +144,281 @@ class TestPromptGenerator:
         # Check messages list is populated
         assert len(prompt.messages) == 2
         assert prompt.messages[0]["role"] == "system"
+
+    def test_gen_local_prompt_without_agent_context_preserves_existing_call(self, generator):
+        """Test local prompt generation still works without agent context."""
+        prompt = generator.gen_local_prompt(
+            user_input="요즘 불안해요.",
+            cloud_analysis={"primary_concern": "anxiety"},
+            history=[],
+        )
+
+        assert isinstance(prompt, LocalPrompt)
+        assert prompt.metadata["has_agent_context"] is False
+        assert "(No agent decision context)" in prompt.system_message
+
+    def test_gen_local_prompt_includes_allowlisted_agent_context(self, generator):
+        """Test local prompt includes allowlisted agent decision fields."""
+        prompt = generator.gen_local_prompt(
+            user_input="요즘 불안해요.",
+            cloud_analysis={"primary_concern": "anxiety"},
+            agent_context={
+                "decision": {
+                    "primary_action": "ASK_FOLLOW_UP",
+                    "secondary_actions": ["SUGGEST_SMALL_ACTION"],
+                    "response_constraints": {
+                        "must_include_followup": True,
+                        "must_include_small_action": True,
+                        "max_questions": 1,
+                        "avoid_topics": ["family_conflict"],
+                        "tone": "calm",
+                    },
+                    "reason_codes": ["not_allowed"],
+                },
+                "emotional_state": {
+                    "state_summary": "불안과 스트레스가 높고 수면이 낮음",
+                    "mood": 0.4,
+                    "anxiety": 0.8,
+                    "stress": 0.7,
+                    "sleep": 0.2,
+                    "energy": 0.3,
+                    "safety": 0.9,
+                    "rapport": 0.2,
+                },
+                "proactive_recall": {
+                    "recalled_keys": ["sleep_pattern"],
+                    "repeated_concerns": ["insomnia"],
+                    "preferred_response_style": ["concise"],
+                    "avoid_topics": ["family_conflict"],
+                },
+                "followup": {"question": "잠드는 데 특히 어려운 시간이 있나요?"},
+                "small_action": {
+                    "action_text": "물을 한 모금 마시고 어깨 힘을 10초만 풀어보세요.",
+                    "intent_label": "SLEEP_PROBLEM",
+                },
+            },
+        )
+
+        combined_prompt = prompt.full_prompt
+        assert "ASK_FOLLOW_UP" in combined_prompt
+        assert "불안과 스트레스가 높고 수면이 낮음" in combined_prompt
+        assert "잠드는 데 특히 어려운 시간이 있나요?" in combined_prompt
+        assert "물을 한 모금 마시고 어깨 힘을 10초만 풀어보세요." in combined_prompt
+        assert "max_questions=1" in combined_prompt
+        assert "family_conflict" in combined_prompt
+        assert "tone" not in combined_prompt
+        assert "reason_codes" not in combined_prompt
+        assert prompt.metadata["has_agent_context"] is True
+
+    def test_gen_local_prompt_excludes_raw_looking_agent_context_keys(self, generator):
+        """Test raw-looking agent context keys and values are not rendered."""
+        prompt = generator.gen_local_prompt(
+            user_input="도움이 필요해요.",
+            cloud_analysis={"primary_concern": "support"},
+            agent_context={
+                "decision": {
+                    "primary_action": "RESPOND_SUPPORTIVELY",
+                    "user_input": "RAW_USER_INPUT_SHOULD_NOT_APPEAR",
+                    "raw_text": "RAW_TEXT_SHOULD_NOT_APPEAR",
+                    "conversation": "CONVERSATION_SHOULD_NOT_APPEAR",
+                    "content": "CONTENT_SHOULD_NOT_APPEAR",
+                    "assistant_response": "ASSISTANT_RESPONSE_SHOULD_NOT_APPEAR",
+                },
+                "raw_text": "TOP_LEVEL_RAW_SHOULD_NOT_APPEAR",
+            },
+        )
+
+        combined_prompt = prompt.full_prompt
+        for forbidden in (
+            "RAW_USER_INPUT_SHOULD_NOT_APPEAR",
+            "RAW_TEXT_SHOULD_NOT_APPEAR",
+            "CONVERSATION_SHOULD_NOT_APPEAR",
+            "CONTENT_SHOULD_NOT_APPEAR",
+            "ASSISTANT_RESPONSE_SHOULD_NOT_APPEAR",
+            "TOP_LEVEL_RAW_SHOULD_NOT_APPEAR",
+            "user_input",
+            "raw_text",
+            "assistant_response",
+        ):
+            assert forbidden not in combined_prompt
+        assert "conversation=" not in combined_prompt
+        assert "content=" not in combined_prompt
+
+    def test_gen_local_prompt_includes_processed_dataset_hints(self, generator):
+        """Test local prompt includes allowlisted processed dataset hints."""
+        prompt = generator.gen_local_prompt(
+            user_input="요즘 너무 지쳤어요.",
+            cloud_analysis={
+                "risk_level": "low",
+                "primary_concern": "stress",
+                "guidance_for_local_model": "Validate stress and offer one small step",
+            },
+            additional_context={
+                "counseling_hint": "오늘 할 일을 작게 나누어 보세요.",
+                "empathy_style_hint": "지친 마음을 먼저 인정하세요.",
+                "wellness_hint": "수면과 식사를 점검하고 짧게 쉬도록 제안하세요.",
+            },
+        )
+
+        assert "오늘 할 일을 작게 나누어 보세요." in prompt.system_message
+        assert "지친 마음을 먼저 인정하세요." in prompt.system_message
+        assert "수면과 식사를 점검하고 짧게 쉬도록 제안하세요." in prompt.system_message
+        assert prompt.metadata["has_dataset_hints"] is True
+        assert prompt.metadata["dataset_hint_keys"] == [
+            "counseling_hint",
+            "empathy_style_hint",
+            "wellness_hint",
+        ]
+
+    def test_gen_local_prompt_excludes_unknown_and_raw_context_keys(self, generator):
+        """Test raw-looking additional context keys are not rendered."""
+        prompt = generator.gen_local_prompt(
+            user_input="요즘 너무 지쳤어요.",
+            cloud_analysis={"primary_concern": "stress"},
+            additional_context={
+                "counseling_hint": "작은 실행 단계를 제안하세요.",
+                "raw_text": "RAW_DATA_SHOULD_NOT_APPEAR",
+                "matched_source_record": "MATCHED_RECORD_SHOULD_NOT_APPEAR",
+                "raw_id": "RAW_ID_SHOULD_NOT_APPEAR",
+                "filename": "SOURCE_FILE_SHOULD_NOT_APPEAR.jsonl",
+                "timestamp": "2026-06-09T00:00:00Z",
+                "wellness_risk_stage": "주의",
+            },
+        )
+
+        combined_prompt = prompt.full_prompt
+        assert "작은 실행 단계를 제안하세요." in combined_prompt
+        assert "RAW_DATA_SHOULD_NOT_APPEAR" not in combined_prompt
+        assert "MATCHED_RECORD_SHOULD_NOT_APPEAR" not in combined_prompt
+        assert "RAW_ID_SHOULD_NOT_APPEAR" not in combined_prompt
+        assert "SOURCE_FILE_SHOULD_NOT_APPEAR.jsonl" not in combined_prompt
+        assert "2026-06-09T00:00:00Z" not in combined_prompt
+        assert "wellness_risk_stage" not in combined_prompt
+
+    def test_memory_context_optional_preserves_existing_calls(self, generator):
+        """Test prompt generation still works without memory context."""
+        cloud_prompt = generator.gen_cloud_prompt(
+            sanitized_input="Hello",
+            rag_context="Context",
+            history=[]
+        )
+        local_prompt = generator.gen_local_prompt(
+            user_input="Hello",
+            cloud_analysis={"primary_concern": "general support"},
+            rag_context="Context",
+            history=[]
+        )
+
+        assert isinstance(cloud_prompt, CloudPrompt)
+        assert isinstance(local_prompt, LocalPrompt)
+        assert "[Memory - Structured Context]" not in cloud_prompt.user_message
+        assert "[Memory - Structured Context]" not in local_prompt.user_message
+        assert cloud_prompt.metadata["has_memory_context"] is False
+        assert local_prompt.metadata["has_memory_context"] is False
+        assert local_prompt.metadata["has_dataset_hints"] is False
+        assert local_prompt.metadata["dataset_hint_keys"] == []
+
+    def test_memory_context_included_in_cloud_and_local_prompts(self, generator):
+        """Test structured memory layers are inserted into prompts."""
+        memory_context = MemoryContext(
+            recent_summaries=[
+                RecentMemoryEntry(
+                    session_id="session-1",
+                    summary="User reported recurring work stress.",
+                    key_topics=["work", "sleep"],
+                    emotional_themes=["anxiety"],
+                    risk_stage="주의",
+                )
+            ],
+            facts=[
+                FactMemoryEntry(
+                    fact_id="fact-1",
+                    session_id="session-1",
+                    category="preference",
+                    label="communication_style",
+                    normalized_value="short concrete steps",
+                    confidence=0.9,
+                    evidence_count=2,
+                    first_seen_at="2026-06-08T00:00:00Z",
+                    last_seen_at="2026-06-08T00:00:00Z",
+                )
+            ],
+            directives=[
+                UserDirective(
+                    directive_id="directive-1",
+                    session_id="session-1",
+                    kind="preference",
+                    term="answer in Korean",
+                    active=True,
+                )
+            ],
+            emotional_trend=[
+                EmotionalStateEntry(
+                    session_id="session-1",
+                    label="anxiety",
+                    intensity=0.75,
+                    confidence=0.8,
+                    source="structured_memory",
+                    risk_stage="주의",
+                )
+            ],
+        )
+
+        cloud_prompt = generator.gen_cloud_prompt(
+            sanitized_input="I am stressed again",
+            memory_context=memory_context,
+        )
+        local_prompt = generator.gen_local_prompt(
+            user_input="I am stressed again",
+            cloud_analysis={"primary_concern": "work stress"},
+            memory_context=memory_context,
+        )
+
+        for prompt_text in (cloud_prompt.user_message, local_prompt.user_message):
+            assert "[Memory - Structured Context]" in prompt_text
+            assert "[Recent Summaries]" in prompt_text
+            assert "User reported recurring work stress." in prompt_text
+            assert "[Facts]" in prompt_text
+            assert "communication_style=short concrete steps" in prompt_text
+            assert "confidence: 0.90" in prompt_text
+            assert "evidence_count: 2" in prompt_text
+            assert "[User Directives]" in prompt_text
+            assert "answer in Korean" in prompt_text
+            assert "[Emotional Trend - Observed, Not Diagnostic]" in prompt_text
+            assert "observed anxiety trend" in prompt_text
+
+        assert cloud_prompt.metadata["has_memory_context"] is True
+        assert local_prompt.metadata["has_memory_context"] is True
+
+    def test_inactive_directives_are_excluded_from_memory_context(self, generator):
+        """Test inactive directives are not rendered into memory prompts."""
+        memory_context = MemoryContext(
+            directives=[
+                UserDirective(
+                    directive_id="directive-active",
+                    session_id="session-1",
+                    kind="preference",
+                    term="use concise replies",
+                    active=True,
+                ),
+                UserDirective(
+                    directive_id="directive-inactive",
+                    session_id="session-1",
+                    kind="boundary",
+                    term="avoid grounding exercises",
+                    active=False,
+                ),
+            ]
+        )
+
+        prompt = generator.gen_local_prompt(
+            user_input="Can we talk?",
+            cloud_analysis={"primary_concern": "support"},
+            memory_context=memory_context,
+        )
+
+        assert "use concise replies" in prompt.user_message
+        assert "avoid grounding exercises" not in prompt.user_message
 
     def test_gen_crisis_prompt(self, generator):
         """Test crisis prompt generation."""

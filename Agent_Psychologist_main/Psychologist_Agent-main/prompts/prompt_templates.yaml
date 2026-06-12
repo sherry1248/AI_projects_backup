@@ -144,6 +144,8 @@ templates:
       [Memory - Long Term Profile]
       {user_profile}
 
+      {memory_context}
+
       [Memory - Recent Interaction]
       {conversation_history}
 
@@ -160,6 +162,7 @@ templates:
       - conversation_history
       - rag_context
       - user_profile
+      - memory_context
       - safety_notice
       - output_schema
 
@@ -181,9 +184,17 @@ templates:
 
       Therapeutic guidance:
       {therapeutic_guidance}
+
+      Agent Decision Context:
+      {agent_context}
+
+      Processed dataset hints:
+      {dataset_hints}
     user_template: |
       User message:
       {user_input}
+
+      {memory_context}
 
       Conversation history:
       {conversation_history}
@@ -200,7 +211,10 @@ templates:
       - cloud_analysis
       - conversation_history
       - rag_context
+      - memory_context
       - therapeutic_guidance
+      - agent_context
+      - dataset_hints
       - safety_notice
       - expert_referral
 

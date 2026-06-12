@@ -359,6 +359,14 @@ class PsychologistAgent:
             result["pipeline_details"]["agents"]["small_action"] = (
                 self._serialize_small_action_agent(small_action_plan)
             )
+            agent_context = self._build_agent_context(
+                decision_result=decision_result,
+                emotional_state=emotional_state,
+                proactive_recall=proactive_recall,
+                followup_question=followup_question,
+                small_action_plan=small_action_plan,
+            )
+            result["pipeline_details"]["agents"]["prompt_context"] = agent_context
 
             if self.mock_mode:
                 response_text = self._compose_mock_response(
@@ -526,6 +534,7 @@ class PsychologistAgent:
                     "wellness_risk_stage": wellness_recommendation.risk_stage if wellness_recommendation else "",
                 },
                 memory_context=memory_context,
+                agent_context=agent_context,
             )
 
             # Use create_chat_completion with messages list
@@ -660,6 +669,8 @@ class PsychologistAgent:
         return {
             "recalled_keys": list(getattr(proactive_recall, "recalled_keys", []) or []),
             "repeated_concerns": list(getattr(proactive_recall, "repeated_concerns", []) or []),
+            "preferred_response_style": list(getattr(proactive_recall, "preferred_response_style", []) or []),
+            "avoid_topics": list(getattr(proactive_recall, "avoid_topics", []) or []),
             "has_last_small_action": bool(getattr(proactive_recall, "last_small_action", "")),
             "has_next_follow_up": bool(getattr(proactive_recall, "next_follow_up", "")),
             "stale": bool(getattr(proactive_recall, "stale", False)),
@@ -691,7 +702,24 @@ class PsychologistAgent:
             "has_action": bool(getattr(small_action_plan, "action_text", "")),
             "action_id": getattr(small_action_plan, "action_id", ""),
             "intent_label": str(getattr(small_action_plan, "intent_label", "")).upper(),
+            "action_text": getattr(small_action_plan, "action_text", ""),
             "status": getattr(small_action_plan, "status", ""),
+        }
+
+    def _build_agent_context(
+        self,
+        decision_result: Any,
+        emotional_state: EmotionalStateVector,
+        proactive_recall: Any,
+        followup_question: str,
+        small_action_plan: Any,
+    ) -> Dict[str, Any]:
+        return {
+            "decision": self._serialize_decision_agent(decision_result),
+            "emotional_state": self._serialize_emotional_state_agent(emotional_state),
+            "proactive_recall": self._serialize_memory_recall_agent(proactive_recall),
+            "followup": {"question": followup_question},
+            "small_action": self._serialize_small_action_agent(small_action_plan),
         }
 
     def _add_safety_notice(self, response_text: str) -> str:

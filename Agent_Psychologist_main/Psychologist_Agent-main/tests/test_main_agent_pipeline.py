@@ -5,6 +5,7 @@ import os
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 os.environ["LLM_TYPE"] = "MOCK"
 
@@ -36,6 +37,8 @@ sys.modules.setdefault(
 )
 
 from src.main import AgentConfig, PsychologistAgent
+from src.api.models import AnalysisResult
+from src.inference.generator import GenerationResult
 
 
 RAW_KEYS = (
@@ -105,6 +108,21 @@ def test_non_crisis_input_creates_agents_pipeline_details():
     assert "decision" in agents
     assert "followup" in agents
     assert "small_action" in agents
+
+
+def test_non_crisis_mock_flow_creates_agent_prompt_context():
+    result = asyncio.run(_run_message("요즘 잠을 못 자고 불안해요"))
+
+    prompt_context = result["pipeline_details"]["agents"].get("prompt_context")
+
+    assert isinstance(prompt_context, dict)
+    assert "decision" in prompt_context
+    assert "emotional_state" in prompt_context
+    assert "proactive_recall" in prompt_context
+    assert "followup" in prompt_context
+    assert "small_action" in prompt_context
+    assert "primary_action" in prompt_context["decision"]
+    assert "state_summary" in prompt_context["emotional_state"]
 
 
 def test_sleep_and_anxiety_input_sets_sleep_intent_label():
@@ -184,8 +202,99 @@ def test_crisis_flow_takes_priority_without_general_followup_or_small_action():
     assert result["risk_stage"] == "위험"
     assert not agents.get("followup", {}).get("has_question", False)
     assert not agents.get("small_action", {}).get("has_action", False)
+    assert "prompt_context" not in agents
     assert "잠드는 데 오래 걸리는 편인가요" not in result["response"]
     assert "발바닥 감각" not in result["response"]
+
+
+def test_non_mock_local_prompt_receives_agent_context():
+    class PromptCapture:
+        def __init__(self):
+            self.local_kwargs = None
+
+        def gen_cloud_prompt(self, **kwargs):
+            return SimpleNamespace(system_message="system", user_message="user")
+
+        def gen_local_prompt(self, **kwargs):
+            self.local_kwargs = kwargs
+            return SimpleNamespace(
+                to_messages=lambda: [{"role": "user", "content": "user"}],
+            )
+
+    agent = PsychologistAgent(
+        config=AgentConfig(
+            enable_safety_check=False,
+            enable_rag=False,
+            enable_risk_audit=False,
+            enable_audit_logging=False,
+        ),
+        mock_mode=True,
+    )
+    agent.mock_mode = False
+    agent._initialized = True
+    agent.prompt_generator = PromptCapture()
+    agent.pii_redactor = SimpleNamespace(
+        redact=Mock(return_value=SimpleNamespace(redacted_text="redacted", entity_count=0, entities=[]))
+    )
+    agent.cloud_client = SimpleNamespace(analyze=AsyncMock(return_value=AnalysisResult()))
+    agent.local_generator = SimpleNamespace(
+        create_chat_completion=AsyncMock(
+            return_value=GenerationResult(
+                text="Generated response",
+                tokens_generated=2,
+                finish_reason="stop",
+                generation_time_ms=1.0,
+            )
+        )
+    )
+    agent.memory_store = SimpleNamespace(
+        get_memory_context=AsyncMock(
+            return_value=SimpleNamespace(
+                is_empty=lambda: True,
+                recent_summaries=[],
+                facts=[],
+                directives=[],
+                emotional_trend=[],
+            )
+        ),
+        get_cloud_context=AsyncMock(return_value=([], None)),
+        get_local_context=AsyncMock(return_value=[]),
+    )
+    agent.session_manager = SimpleNamespace(
+        add_to_history=AsyncMock(),
+        update_activity=AsyncMock(),
+    )
+    agent.counseling_retriever = SimpleNamespace(
+        recommend=Mock(
+            return_value=SimpleNamespace(
+                intervention_hint="작은 단계를 제안하세요.",
+                matched_record_id="counseling-test",
+                category="support",
+                score=1.0,
+            )
+        )
+    )
+    agent.empathy_retriever = SimpleNamespace(
+        recommend=Mock(
+            return_value=SimpleNamespace(
+                empathy_style_hint="차분하게 공감하세요.",
+                emotion_label="불안",
+                empathy_label="위로",
+                matched_record_id="empathy-test",
+                score=1.0,
+            )
+        )
+    )
+    agent.wellness_recommender = SimpleNamespace(recommend=Mock(return_value=None))
+
+    result = asyncio.run(agent.process_message("요즘 잠을 못 자고 불안해요", "session-1"))
+    agent_context = agent.prompt_generator.local_kwargs["agent_context"]
+
+    assert result["requires_crisis_response"] is False
+    assert agent_context["decision"]["primary_action"]
+    assert agent_context["emotional_state"]["state_summary"]
+    assert "question" in agent_context["followup"]
+    assert "small_action" in agent_context
 
 
 def test_agents_pipeline_details_do_not_include_raw_looking_keys():
