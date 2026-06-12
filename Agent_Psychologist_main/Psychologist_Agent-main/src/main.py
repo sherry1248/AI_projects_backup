@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from src.agent.decision import decide_action
 from src.agent.followup import generate_followup_question
 from src.agent.intent import classify_intent
-from src.agent.models import DecisionAction, EmotionalStateVector
+from src.agent.models import DecisionAction, EmotionLabel, EmotionalStateVector
 from src.agent.planner import generate_small_action_plan
 from src.agent.recall import build_proactive_recall
 from src.agent.state import summarize_emotional_state, update_emotional_state
@@ -291,6 +291,7 @@ class PsychologistAgent:
             emotional_state = update_emotional_state(
                 previous_state=None,
                 intent_result=intent_result,
+                emotion_labels=self._emotion_labels_from_empathy(empathy_recommendation),
                 risk_stage=result["risk_stage"],
                 wellness_checkin=wellness_checkin,
             )
@@ -606,6 +607,22 @@ class PsychologistAgent:
             "distance": getattr(recommendation, "distance", 0.0),
             "hint_present": bool(getattr(recommendation, "support_hint", "")),
         }
+
+    def _emotion_labels_from_empathy(
+        self,
+        recommendation: EmpathyRecommendation,
+    ) -> List[EmotionLabel]:
+        label = str(getattr(recommendation, "emotion_label", "") or "").strip()
+        mapping = {
+            "불안": EmotionLabel.ANXIETY,
+            "슬픔": EmotionLabel.SADNESS,
+            "분노": EmotionLabel.ANGER,
+            "상처": EmotionLabel.SADNESS,
+            "당황": EmotionLabel.STRESS,
+            "기쁨": EmotionLabel.RELIEF,
+        }
+        emotion = mapping.get(label)
+        return [emotion] if emotion else []
 
     def _serialize_intent_agent(self, intent_result: Any) -> Dict[str, Any]:
         labels = []
