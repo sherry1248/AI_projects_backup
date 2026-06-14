@@ -261,7 +261,11 @@ class DeepseekClient:
         # Simple keyword-based mock analysis
         message_lower = user_message.lower()
 
-        if any(word in message_lower for word in ["suicide", "kill myself", "end my life", "want to die", "죽고 싶", "자살", "끝내고 싶", "자해"]):
+        if any(word in message_lower for word in [
+            "suicide", "kill myself", "end my life", "want to die", "hurt myself",
+            "harm myself", "self-harm", "죽고 싶", "죽고싶", "자살", "극단적 선택",
+            "끝내고 싶", "자해", "해치고 싶", "스스로를 해치", "지금 위험"
+        ]):
             risk_level = RiskLevel.CRITICAL
             risk_stage = "위험"
             concern = "suicidal ideation"
@@ -274,7 +278,7 @@ class DeepseekClient:
             guidance = "Prioritize safety assessment. Provide crisis resources immediately."
             technique = "Crisis Intervention with Safety Planning"
             risk_reasoning = "User expressing direct suicidal ideation requires immediate crisis response."
-        elif any(word in message_lower for word in ["hurt myself", "self-harm", "cutting", "우울", "불안", "무기력", "외롭", "혼자"]):
+        elif any(word in message_lower for word in ["cutting", "overdose", "no reason to live", "better off dead", "유서를", "계획이 있어"]):
             risk_level = RiskLevel.HIGH
             risk_stage = "위험"
             concern = "self-harm risk"

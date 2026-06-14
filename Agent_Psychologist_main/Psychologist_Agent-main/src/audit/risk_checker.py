@@ -88,14 +88,22 @@ class RiskChecker:
     # High-risk keywords that should trigger additional checks
     CRITICAL_KEYWORDS = [
         "suicide", "kill myself", "end my life", "want to die",
-        "kill someone", "hurt someone", "murder",
-        "죽고 싶", "자살", "끝내고 싶", "살고 싶지", "자해", "죽어버리고 싶", "사라지고 싶"
+        "hurt myself", "harm myself", "self-harm", "kill someone", "hurt someone", "murder",
+        "죽고 싶", "죽고싶", "자살", "극단적 선택", "끝내고 싶", "살고 싶지",
+        "자해", "죽어버리고 싶", "사라지고 싶", "해치고 싶", "스스로를 해치",
+        "지금 위험", "위험해요"
     ]
 
     HIGH_RISK_KEYWORDS = [
-        "self-harm", "cutting", "hurt myself", "overdose",
-        "hopeless", "no reason to live", "better off dead",
-        "우울", "불안", "무기력", "절망", "외롭", "혼자", "아무도", "사라지고 싶"
+        "cutting", "overdose", "no reason to live", "better off dead",
+        "계획이 있어", "방법을 정했", "유서를"
+    ]
+
+    MODERATE_DISTRESS_KEYWORDS = [
+        "depressed", "depression", "anxious", "anxiety", "panic", "hopeless",
+        "insomnia", "can't sleep", "cannot sleep", "sleepless",
+        "우울", "불안", "무기력", "절망", "외롭", "불면", "잠을 못", "잠이 안",
+        "잠도 잘 못", "수면"
     ]
 
     CRISIS_INDICATORS = [
@@ -189,7 +197,8 @@ class RiskChecker:
         text_lower = text.lower()
         flags = {
             "critical_keywords": False,
-            "high_risk_keywords": False
+            "high_risk_keywords": False,
+            "moderate_distress_keywords": False,
         }
 
         # Check for critical keywords
@@ -203,6 +212,11 @@ class RiskChecker:
             if keyword in text_lower:
                 flags["high_risk_keywords"] = True
                 return RiskLevel.HIGH, flags
+
+        for keyword in self.MODERATE_DISTRESS_KEYWORDS:
+            if keyword in text_lower:
+                flags["moderate_distress_keywords"] = True
+                return RiskLevel.MODERATE, flags
 
         return RiskLevel.LOW, flags
 
@@ -319,6 +333,9 @@ class RiskChecker:
 
         has_critical = any(kw in text_lower for kw in self.CRITICAL_KEYWORDS)
         has_high_risk = any(kw in text_lower for kw in self.HIGH_RISK_KEYWORDS)
+        has_moderate_distress = any(
+            kw in text_lower for kw in self.MODERATE_DISTRESS_KEYWORDS
+        )
 
         if has_critical and cloud_analysis.risk_level == RiskLevel.LOW:
             logger.warning("Validation failed: Critical keywords with LOW risk")
@@ -326,6 +343,10 @@ class RiskChecker:
 
         if has_high_risk and cloud_analysis.risk_level == RiskLevel.LOW:
             logger.warning("Validation failed: High-risk keywords with LOW risk")
+            return False
+
+        if has_moderate_distress and cloud_analysis.risk_level == RiskLevel.LOW:
+            logger.warning("Validation failed: Distress keywords with LOW risk")
             return False
 
         return True

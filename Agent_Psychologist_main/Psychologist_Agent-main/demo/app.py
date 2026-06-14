@@ -188,18 +188,62 @@ def _dataset_lines(summary: Dict[str, Any], result: Optional[Dict[str, Any]]) ->
     for source_key in ("counseling", "empathy", "wellness"):
         source = _as_dict(details.get(source_key))
         category = source.get("category") or source.get("matched_category")
-        score = source.get("score") or source.get("similarity_score") or source.get("confidence")
+        score = source.get("score")
+        if score is None:
+            score = source.get("similarity_score")
+        if score is None:
+            score = source.get("confidence")
         matched_record_id = source.get("matched_record_id")
         safe_parts = []
         if isinstance(category, str) and len(category) <= 80:
             safe_parts.append(f"category={escape_text(category)}")
         if isinstance(score, (int, float)):
             safe_parts.append(f"score={score}")
+            if score <= 0:
+                safe_parts.append("low_confidence_match=True")
         if isinstance(matched_record_id, str) and matched_record_id:
             safe_parts.append(f"record_id_present=True")
         if safe_parts:
             lines.append(f"{source_key}: " + ", ".join(safe_parts))
     return lines
+
+
+def _final_safety_summary(
+    summary: Dict[str, Any],
+    result: Dict[str, Any],
+    safety: Dict[str, Any],
+) -> Dict[str, Any]:
+    final_stage = result.get("risk_stage") or summary.get("risk_stage", "관심")
+    final_level = result.get("risk_level") or summary.get("risk_level", "none")
+    final_crisis = result.get(
+        "requires_crisis_response",
+        summary.get("requires_crisis_response", False),
+    )
+
+    merged = dict(safety)
+    merged.update(
+        {
+            "risk_stage": final_stage,
+            "risk_level": final_level,
+            "requires_crisis_response": final_crisis,
+        }
+    )
+    return merged
+
+
+DEFAULT_SAFETY_NOTICE_START = "이 AI는 의료 진단이나 치료를 하지 않으며 전문 상담사를 대체하지 않습니다."
+
+
+def _strip_default_safety_notice(response_text: str, *, risk_stage: str) -> str:
+    if risk_stage == "위험":
+        return response_text
+
+    marker = "\n\n" + DEFAULT_SAFETY_NOTICE_START
+    if marker in response_text:
+        return response_text.split(marker, 1)[0].rstrip()
+    if response_text.startswith(DEFAULT_SAFETY_NOTICE_START):
+        return ""
+    return response_text
 
 
 def build_agent_pipeline_markdown(
@@ -212,7 +256,11 @@ def build_agent_pipeline_markdown(
     details = _pipeline_details(result)
     agents = _agent_details(result)
 
-    safety = _as_dict(agents.get("safety")) or _as_dict(details.get("safety"))
+    safety = _final_safety_summary(
+        summary,
+        result,
+        _as_dict(agents.get("safety")) or _as_dict(details.get("safety")),
+    )
     emotion = _as_dict(agents.get("emotion"))
     intent = _as_dict(agents.get("intent"))
     memory = _as_dict(agents.get("recall")) or _as_dict(agents.get("memory")) or _as_dict(details.get("memory_context"))
@@ -392,10 +440,11 @@ def build_general_markdown(
     result: Optional[Dict[str, Any]] = None,
 ) -> str:
     risk_stage = summary.get("risk_stage", "관심")
+    visible_response = _strip_default_safety_notice(response_text, risk_stage=risk_stage)
     return "\n\n".join(
         [
             wrap_card("상담 응답 카드", f"- 위험 단계: {escape_text(risk_stage)}"),
-            wrap_card("AI 상담 응답", safe_body_text(response_text)),
+            wrap_card("AI 상담 응답", safe_body_text(visible_response)),
             build_agent_pipeline_markdown(summary, result),
         ]
     )

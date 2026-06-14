@@ -36,6 +36,36 @@ ACTION_TEMPLATES = {
 }
 
 MAX_HINT_ACTION_CHARS = 80
+NON_ACTION_HINT_MARKERS = (
+    "상담 참고",
+    "공감 참고",
+    "웰니스 참고",
+    "감정 확인",
+    "공감",
+    "상담",
+    "힌트",
+    "제안하세요",
+    "반응이 도움이",
+    "도움이 됩니다",
+    "기분이 우울",
+    "우울하시군요",
+)
+
+ACTION_MARKERS = (
+    "보세요",
+    "해보세요",
+    "챙겨",
+    "낮춰",
+    "적어",
+    "느껴",
+    "마시",
+    "쉬",
+    "정해",
+    "내려놓",
+    "집중",
+    "연락",
+    "걸어",
+)
 
 
 def _new_action_id() -> str:
@@ -82,6 +112,12 @@ def _select_intent(intent_result: Optional[IntentAgentResult]) -> IntentLabel:
 def _clean_hint_action(wellness_hint: str) -> str:
     compact = " ".join((wellness_hint or "").split())
     if not compact:
+        return ""
+
+    if any(marker in compact for marker in NON_ACTION_HINT_MARKERS):
+        return ""
+
+    if not any(marker in compact for marker in ACTION_MARKERS):
         return ""
 
     if len(compact) <= MAX_HINT_ACTION_CHARS:

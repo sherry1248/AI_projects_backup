@@ -22,3 +22,17 @@ def test_general_markdown_hides_internal_hint_cards():
     assert "internal counseling hint" not in markdown
     assert "internal empathy hint" not in markdown
     assert "internal wellness hint" not in markdown
+
+
+def test_general_markdown_strips_default_safety_notice_for_non_crisis():
+    notice = (
+        "이 AI는 의료 진단이나 치료를 하지 않으며 전문 상담사를 대체하지 않습니다. "
+        "위험 신호가 있으면 109, 119, 112 또는 가까운 응급실/지역 정신건강복지센터에 바로 연결하세요."
+    )
+    markdown = build_general_markdown(
+        {"risk_stage": "주의"},
+        f"수면과 불안을 먼저 살펴볼게요.\n\n{notice}",
+    )
+
+    assert "수면과 불안을 먼저 살펴볼게요." in markdown
+    assert notice not in markdown

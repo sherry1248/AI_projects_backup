@@ -193,6 +193,69 @@ def test_mock_response_includes_small_action_when_planned():
     assert "작은 행동" in result["response"]
 
 
+def test_sleep_anxiety_mock_response_does_not_include_low_mood_phrase():
+    result = asyncio.run(_run_message("요즘 잠을 못 자고 불안해요"))
+
+    assert "기분이 우울" not in result["response"]
+    assert "우울하시군요" not in result["response"]
+
+
+def test_sleep_anxiety_followup_is_sleep_related():
+    result = asyncio.run(_run_message("요즘 잠을 못 자고 불안해요"))
+
+    followup = result["pipeline_details"]["agents"]["followup"]["question"]
+
+    assert "잠드는 데 오래 걸리는 편인가요" in followup
+    assert followup in result["response"]
+
+
+def test_sleep_anxiety_small_action_is_action_not_empathy_sentence():
+    result = asyncio.run(
+        _run_message(
+            "요즘 잠을 못 자고 불안해요",
+            wellness_checkin={
+                "mood_score": 3,
+                "anxiety_score": 5,
+                "loneliness_score": 3,
+                "sleep_quality": 1,
+                "meal_status": 3,
+                "energy_score": 2,
+                "stress_score": 4,
+            },
+        )
+    )
+
+    small_action = result["pipeline_details"]["agents"]["small_action"]
+    action_text = small_action["action_text"]
+
+    assert any(keyword in action_text for keyword in ("잠", "수면", "불안", "발바닥", "화면", "조명"))
+    assert "감정을 먼저 확인" not in action_text
+    assert "공감" not in action_text
+    assert "기분이 우울" not in action_text
+    assert f"오늘의 작은 행동으로는 {action_text}" in result["response"]
+
+
+def test_risk_stage_matches_safety_agent_view():
+    result = asyncio.run(
+        _run_message(
+            "요즘 잠을 못 자고 불안해요",
+            wellness_checkin={
+                "mood_score": 3,
+                "anxiety_score": 5,
+                "loneliness_score": 3,
+                "sleep_quality": 1,
+                "meal_status": 3,
+                "energy_score": 2,
+                "stress_score": 4,
+            },
+        )
+    )
+
+    safety = result["pipeline_details"]["agents"]["safety"]
+
+    assert result["risk_stage"] == safety["risk_stage"]
+
+
 def test_crisis_flow_takes_priority_without_general_followup_or_small_action():
     result = asyncio.run(_run_message("죽고 싶어요. 지금 자해하고 싶어요."))
 

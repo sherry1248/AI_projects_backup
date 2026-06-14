@@ -62,17 +62,15 @@ class TestRiskChecker:
         assert not assessment.requires_escalation
 
     def test_assess_high_risk(self, checker, high_risk_analysis):
-        """Test assessment of high-risk input."""
+        """Test that explicit self-harm intent is escalated to crisis risk."""
         assessment = checker.assess(
             high_risk_analysis,
             "I want to hurt myself"
         )
 
-        assert assessment.risk_level == RiskLevel.HIGH
-        assert assessment.intervention_level in [
-            InterventionLevel.ACTIVE,
-            InterventionLevel.CRISIS
-        ]
+        assert assessment.risk_level == RiskLevel.CRITICAL
+        assert assessment.intervention_level == InterventionLevel.CRISIS
+        assert assessment.requires_crisis_response
 
     def test_keyword_escalation(self, checker, low_risk_analysis):
         """Test that critical keywords escalate risk."""
@@ -94,8 +92,8 @@ class TestRiskChecker:
 
         assert assessment.flags.get("immediate_concern")
         assert assessment.flags.get("urgent")
-        # HIGH + immediate_concern = CRISIS (EMERGENCY requires CRITICAL level)
-        assert assessment.intervention_level == InterventionLevel.CRISIS
+        assert assessment.risk_level == RiskLevel.CRITICAL
+        assert assessment.intervention_level == InterventionLevel.EMERGENCY
 
     def test_validate_analysis(self, checker, low_risk_analysis):
         """Test analysis validation."""

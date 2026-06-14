@@ -208,3 +208,45 @@ def test_dataset_strategy_agent_shows_hint_keys_not_hint_text():
     assert "category=sleep" in markdown
     assert "score=0.9" in markdown
     assert raw_hint not in markdown
+
+
+def test_pipeline_markdown_uses_final_risk_stage_for_safety_agent():
+    markdown = build_agent_pipeline_markdown(
+        {"risk_stage": "주의", "risk_level": "moderate"},
+        {
+            "risk_stage": "주의",
+            "risk_level": "moderate",
+            "pipeline_details": {
+                "agents": {
+                    "safety": {
+                        "risk_stage": "관심",
+                        "risk_level": "none",
+                    }
+                }
+            },
+        },
+    )
+
+    assert "risk_stage: 주의" in markdown
+    assert "risk_stage: 관심" not in markdown
+
+
+def test_dataset_strategy_flags_low_confidence_category_without_raw_text():
+    raw_text = "원문 데이터셋 문장은 노출되면 안 됩니다"
+    markdown = build_agent_pipeline_markdown(
+        {"risk_stage": "관심", "counseling_hint": "hint present"},
+        {
+            "pipeline_details": {
+                "counseling": {
+                    "category": "ADDICTION",
+                    "score": 0.0,
+                    "content": raw_text,
+                }
+            },
+        },
+    )
+
+    assert "category=ADDICTION" in markdown
+    assert "score=0.0" in markdown
+    assert "low_confidence_match=True" in markdown
+    assert raw_text not in markdown

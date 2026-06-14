@@ -216,6 +216,7 @@ class PsychologistAgent:
                         session_id, risk_level=safety_result.risk_level.value
                     )
 
+                    self._sync_final_safety_agent(result)
                     return result
 
             if self.config.enable_risk_audit:
@@ -238,16 +239,19 @@ class PsychologistAgent:
                         session_id, user_input, crisis_response.message
                     )
 
+                    self._sync_final_safety_agent(result)
                     return result
 
                 result["risk_level"] = risk_assessment.risk_level.value
                 result["risk_stage"] = risk_assessment.risk_stage
+                self._sync_final_safety_agent(result)
 
             result["pipeline_details"].setdefault("agents", {})
             intent_result = classify_intent(user_input)
             result["pipeline_details"]["agents"]["intent"] = self._serialize_intent_agent(
                 intent_result
             )
+            self._sync_final_safety_agent(result)
 
             counseling_recommendation = self.counseling_retriever.recommend(user_input)
             empathy_recommendation = self.empathy_retriever.recommend(user_input)
@@ -373,10 +377,13 @@ class PsychologistAgent:
                     counseling_recommendation.intervention_hint,
                     empathy_recommendation.empathy_style_hint,
                     wellness_recommendation.support_hint if wellness_recommendation else "",
+                    intent_result=intent_result,
+                    emotional_state=emotional_state,
                     followup_question=followup_question,
                     small_action_text=small_action_plan.action_text if small_action_plan else "",
                 )
                 result["response"] = self._add_safety_notice(response_text)
+                self._sync_final_safety_agent(result)
 
                 await self.session_manager.add_to_history(
                     session_id, user_input, result["response"]
@@ -513,10 +520,12 @@ class PsychologistAgent:
                         session_id, user_input, crisis_response.message
                     )
 
+                    self._sync_final_safety_agent(result)
                     return result
 
                 result["risk_level"] = risk_assessment.risk_level.value
                 result["risk_stage"] = risk_assessment.risk_stage
+                self._sync_final_safety_agent(result)
 
             # Step 7: Local Generation (GGUF) with 3-turn history and messages list
             local_history = await self.memory_store.get_local_context(session_id)
@@ -547,6 +556,7 @@ class PsychologistAgent:
                 response_text = self._merge_wellness_hint(response_text, wellness_recommendation.support_hint)
 
             result["response"] = self._add_safety_notice(response_text)
+            self._sync_final_safety_agent(result)
 
             # Step 8: Update memory
             await self.session_manager.add_to_history(
@@ -706,6 +716,25 @@ class PsychologistAgent:
             "status": getattr(small_action_plan, "status", ""),
         }
 
+    def _sync_final_safety_agent(self, result: Dict[str, Any]) -> None:
+        """Mirror final risk fields into the agent-facing safety summary."""
+        details = result.setdefault("pipeline_details", {})
+        agents = details.setdefault("agents", {})
+        existing_safety = {}
+        if isinstance(agents.get("safety"), dict):
+            existing_safety.update(agents["safety"])
+        if isinstance(details.get("safety"), dict):
+            existing_safety.update(details["safety"])
+
+        existing_safety.update(
+            {
+                "risk_stage": result.get("risk_stage", "관심"),
+                "risk_level": result.get("risk_level", "none"),
+                "requires_crisis_response": result.get("requires_crisis_response", False),
+            }
+        )
+        agents["safety"] = existing_safety
+
     def _build_agent_context(
         self,
         decision_result: Any,
@@ -734,6 +763,97 @@ class PsychologistAgent:
             return response_text
         return f"{response_text}{notice}"
 
+    def _intent_labels(self, intent_result: Any) -> List[str]:
+        labels = []
+        primary = getattr(intent_result, "primary_intent", "")
+        primary_name = self._enum_name(primary)
+        if primary_name:
+            labels.append(primary_name)
+        for candidate in getattr(intent_result, "candidates", []) or []:
+            label_name = self._enum_name(getattr(candidate, "label", ""))
+            if label_name and label_name not in labels:
+                labels.append(label_name)
+        return labels
+
+    def _is_low_mood_context(self, intent_result: Any, emotional_state: EmotionalStateVector) -> bool:
+        labels = set(self._intent_labels(intent_result))
+        return (
+            "LOW_MOOD_SUPPORT" in labels
+            or getattr(emotional_state, "mood", 1.0) <= 0.35
+        )
+
+    def _is_sleep_or_anxiety_context(self, intent_result: Any, emotional_state: EmotionalStateVector) -> bool:
+        labels = set(self._intent_labels(intent_result))
+        return (
+            bool(labels.intersection({"SLEEP_PROBLEM", "ANXIETY_SUPPORT"}))
+            or getattr(emotional_state, "anxiety", 0.0) >= 0.55
+            or getattr(emotional_state, "sleep", 1.0) <= 0.45
+        )
+
+    def _safe_response_hint(
+        self,
+        hint: str,
+        *,
+        allow_low_mood: bool,
+        require_action: bool = False,
+    ) -> str:
+        compact = " ".join((hint or "").split())
+        if not compact:
+            return ""
+
+        blocked_markers = (
+            "상담 참고",
+            "공감 참고",
+            "웰니스 참고",
+            "심리상담 데이터 기반 힌트",
+            "공감형 대화 기반 힌트",
+            "웰니스 기반 힌트",
+        )
+        if any(marker in compact for marker in blocked_markers):
+            return ""
+        if not allow_low_mood and any(marker in compact for marker in ("기분이 우울", "우울하시군요", "우울")):
+            return ""
+        if "제안하세요" in compact or "공감하세요" in compact:
+            return ""
+
+        if require_action and not self._looks_like_action_text(compact):
+            return ""
+
+        return compact
+
+    def _looks_like_action_text(self, text: str) -> bool:
+        compact = " ".join((text or "").split())
+        if not compact:
+            return False
+        blocked = (
+            "감정 확인",
+            "공감",
+            "상담",
+            "힌트",
+            "기분이 우울",
+            "우울하시군요",
+            "반응이 도움이",
+            "도움이 됩니다",
+        )
+        if any(marker in compact for marker in blocked):
+            return False
+        action_markers = (
+            "보세요",
+            "해보세요",
+            "챙겨",
+            "낮춰",
+            "적어",
+            "느껴",
+            "마시",
+            "쉬",
+            "정해",
+            "내려놓",
+            "집중",
+            "연락",
+            "걸어",
+        )
+        return any(marker in compact for marker in action_markers)
+
     def _get_wellness_recommendation(
         self,
         wellness_checkin: Optional[Dict[str, Any]],
@@ -755,15 +875,31 @@ class PsychologistAgent:
         counseling_hint: str,
         empathy_style_hint: str,
         wellness_hint: str,
+        intent_result: Any = None,
+        emotional_state: Optional[EmotionalStateVector] = None,
         followup_question: str = "",
         small_action_text: str = "",
     ) -> str:
+        emotional_state = emotional_state or EmotionalStateVector()
+        allow_low_mood = self._is_low_mood_context(intent_result, emotional_state)
+        sleep_or_anxiety = self._is_sleep_or_anxiety_context(intent_result, emotional_state)
+
         segments = [
             "지금 느끼는 부담이 꽤 컸을 것 같아요.",
             "이런 상태에서는 마음이 복잡해지고, 무엇부터 해야 할지 막막하게 느껴질 수 있습니다.",
         ]
 
-        if empathy_style_hint:
+        if sleep_or_anxiety:
+            segments = [
+                "잠이 잘 오지 않고 불안까지 겹치면 몸과 마음이 계속 긴장한 채로 버티는 느낌이 들 수 있어요.",
+                "지금은 한 번에 해결하려 하기보다, 수면 리듬과 불안을 조금 낮추는 쪽부터 같이 살펴보면 좋겠습니다.",
+            ]
+        elif allow_low_mood:
+            segments = [
+                "기분이 가라앉은 상태로 하루를 버티는 일이 꽤 무겁게 느껴졌을 것 같아요.",
+                "지금의 반응은 약해서가 아니라, 에너지가 많이 소진됐다는 신호일 수 있습니다.",
+            ]
+        elif empathy_style_hint:
             segments[1] = (
                 "지금의 반응은 이상하거나 약한 것이 아니라, "
                 "많이 버텨온 마음이 보내는 신호일 수 있어요."
@@ -771,8 +907,9 @@ class PsychologistAgent:
 
         action_step = ""
         for hint in (wellness_hint, counseling_hint):
-            if hint and hint.strip() and "제안하세요" not in hint:
-                action_step = hint.strip()
+            safe_hint = self._safe_response_hint(hint, allow_low_mood=allow_low_mood)
+            if safe_hint:
+                action_step = safe_hint
                 break
 
         if not action_step:
@@ -781,8 +918,13 @@ class PsychologistAgent:
         segments.append(action_step)
         if followup_question:
             segments.append(followup_question)
-        if small_action_text:
-            segments.append(f"오늘의 작은 행동으로는 {small_action_text}")
+        safe_small_action = self._safe_response_hint(
+            small_action_text,
+            allow_low_mood=allow_low_mood,
+            require_action=True,
+        )
+        if safe_small_action:
+            segments.append(f"오늘의 작은 행동으로는 {safe_small_action}")
         return "\n\n".join(segments)
 
     async def process_message_stream(

@@ -78,7 +78,13 @@ Guidelines:
 - Never provide medical diagnoses or prescribe treatment
 - Maintain hope while being realistic
 
-{therapeutic_guidance}""",
+{therapeutic_guidance}
+
+Agent Decision Context:
+{agent_context}
+
+Processed dataset hints:
+{dataset_hints}""",
         user_template="""Based on the following clinical analysis, generate a supportive response:
 
 Clinical Analysis:
@@ -93,7 +99,15 @@ Recent Conversation:
 {conversation_history}
 
 Respond with empathy and support, incorporating the suggested therapeutic approach.""",
-        variables=["user_input", "cloud_analysis", "rag_context", "conversation_history", "therapeutic_guidance"]
+        variables=[
+            "user_input",
+            "cloud_analysis",
+            "rag_context",
+            "conversation_history",
+            "therapeutic_guidance",
+            "agent_context",
+            "dataset_hints"
+        ]
     ),
 
     "crisis_response": PromptTemplate(

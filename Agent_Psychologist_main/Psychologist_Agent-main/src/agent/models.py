@@ -17,6 +17,8 @@ RAW_TEXT_FIELD_NAMES = {
     "assistant_response",
     "conversation",
     "content",
+    "transcript",
+    "message",
 }
 
 
@@ -234,6 +236,14 @@ class ProactiveRecallResult:
     memory_types: List[str] = field(default_factory=list)
     relevance_scores: Dict[str, float] = field(default_factory=dict)
     reason_tags: List[str] = field(default_factory=list)
+    repeated_concerns: List[str] = field(default_factory=list)
+    emotional_trend_summary: str = ""
+    last_small_action: str = ""
+    preferred_response_style: List[str] = field(default_factory=list)
+    avoid_topics: List[str] = field(default_factory=list)
+    next_follow_up: str = ""
+    recalled_keys: List[str] = field(default_factory=list)
+    stale: bool = False
 
     def __post_init__(self) -> None:
         self.relevance_scores = {
@@ -249,12 +259,21 @@ class DecisionAgentResult:
     """Decision agent output for the next pipeline action."""
 
     action: DecisionAction = DecisionAction.RESPOND_SUPPORTIVELY
+    primary_action: DecisionAction = DecisionAction.RESPOND_SUPPORTIVELY
+    secondary_actions: List[DecisionAction] = field(default_factory=list)
+    response_constraints: Dict[str, Any] = field(default_factory=dict)
+    reason_codes: List[str] = field(default_factory=list)
     confidence: float = 1.0
     rationale_tags: List[str] = field(default_factory=list)
     state_vector: EmotionalStateVector = field(default_factory=EmotionalStateVector)
     safety_escalation: Optional[SafetyAgentResult] = None
 
     def __post_init__(self) -> None:
+        if self.primary_action == DecisionAction.RESPOND_SUPPORTIVELY:
+            self.primary_action = self.action
+        self.action = self.primary_action
+        if not self.rationale_tags:
+            self.rationale_tags = list(self.reason_codes)
         self.confidence = _clamp01(self.confidence)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -267,6 +286,13 @@ class SmallActionPlan:
 
     action_id: str
     title: str
+    session_id: str = ""
+    intent_label: str = ""
+    action_text: str = ""
+    rationale_label: str = ""
+    status: str = "suggested"
+    created_at: str = ""
+    check_after_turns: int = 1
     steps: List[str] = field(default_factory=list)
     estimated_minutes: int = 5
     difficulty: str = "easy"
@@ -282,6 +308,14 @@ class SessionDreamSummary:
 
     session_id: str
     summary_id: str
+    main_issue: List[str] = field(default_factory=list)
+    emotional_trend: List[str] = field(default_factory=list)
+    risk_stage_start: str = "관심"
+    risk_stage_end: str = "관심"
+    last_small_action: str = ""
+    next_follow_up: str = ""
+    important_user_directives: List[str] = field(default_factory=list)
+    created_at: str = ""
     emotional_arc: List[EmotionLabel] = field(default_factory=list)
     recurring_themes: List[str] = field(default_factory=list)
     memory_updates: List[str] = field(default_factory=list)

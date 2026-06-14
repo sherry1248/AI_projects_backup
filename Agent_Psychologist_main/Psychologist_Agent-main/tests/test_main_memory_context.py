@@ -215,6 +215,18 @@ def test_non_crisis_flow_fetches_and_passes_memory_context():
     }
 
 
+def test_non_crisis_flow_passes_processed_dataset_hints_to_local_prompt():
+    agent = build_agent()
+
+    asyncio.run(agent.process_message("I feel stressed", "session-1"))
+
+    additional_context = agent.prompt_generator.local_kwargs["additional_context"]
+    assert additional_context["counseling_hint"] == "supportive hint"
+    assert additional_context["empathy_style_hint"] == "warm hint"
+    assert additional_context["wellness_hint"] == ""
+    assert "wellness_risk_stage" in additional_context
+
+
 def test_safety_gateway_crisis_does_not_fetch_memory_context():
     agent = build_agent(safety=crisis_safety_result())
 
