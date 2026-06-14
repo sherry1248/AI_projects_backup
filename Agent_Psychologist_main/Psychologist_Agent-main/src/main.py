@@ -7,6 +7,7 @@ the complete inference pipeline from user input to response generation.
 
 import os
 import asyncio
+import time
 from typing import Optional, Dict, Any, List, AsyncIterator
 from dataclasses import dataclass
 
@@ -38,6 +39,20 @@ from src.session.manager import SessionManager
 from src.utils.logging_config import setup_logging
 
 logger = setup_logging("psychologist_agent")
+
+
+INTERNAL_RESPONSE_MARKERS = (
+    "내담자의 표현을 반영",
+    "핵심 감정을 명료화",
+    "상담 참고",
+    "공감 참고",
+    "웰니스 참고",
+    "intervention_hint",
+    "empathy_style_hint",
+    "support_hint",
+    "guidance",
+    "therapeutic_guidance",
+)
 
 
 @dataclass
@@ -118,12 +133,13 @@ class PsychologistAgent:
 
         logger.info("Initializing PsychologistAgent...")
 
-        # Initialize RAG (loads knowledge base)
-        if self.config.enable_rag:
+        # MOCK mode uses deterministic in-process responses and does not need
+        # expensive RAG/model loading before the first demo response.
+        if self.config.enable_rag and not self.mock_mode:
             await self.rag_retriever.initialize()
 
-        # Initialize local generator (loads model)
-        await self.local_generator.initialize()
+        if not self.mock_mode:
+            await self.local_generator.initialize()
 
         self._initialized = True
         logger.info("PsychologistAgent initialized successfully")
@@ -155,8 +171,13 @@ class PsychologistAgent:
         Returns:
             Dict containing response and metadata
         """
+        total_start = time.perf_counter()
         if not self._initialized:
+            initialize_start = time.perf_counter()
             await self.initialize()
+            initialize_ms = self._elapsed_ms(initialize_start)
+        else:
+            initialize_ms = 0.0
 
         result = {
             "response": "",
@@ -181,9 +202,13 @@ class PsychologistAgent:
         previous_emotional_state = None
         previous_small_action = None
         previous_followup = ""
+        timing = result["pipeline_details"].setdefault("timing", {})
+        if initialize_ms:
+            timing["initialize"] = initialize_ms
 
         try:
             # Step 1: Safety Gateway Check
+            safety_start = time.perf_counter()
             if self.config.enable_safety_check:
                 safety_result = await self.safety_gateway.check(user_input)
 
@@ -208,7 +233,7 @@ class PsychologistAgent:
 
                 # Handle immediate crisis
                 if not safety_result.is_safe:
-                    result["response"] = safety_result.response
+                    result["response"] = self.sanitize_user_response(safety_result.response or "")
                     result["risk_level"] = safety_result.risk_level.value
                     result["risk_stage"] = safety_result.risk_stage
                     result["requires_crisis_response"] = True
@@ -223,6 +248,8 @@ class PsychologistAgent:
                     )
 
                     self._sync_final_safety_agent(result)
+                    timing["safety"] = self._elapsed_ms(safety_start)
+                    self._finalize_timing(result, total_start)
                     return result
 
             if self.config.enable_risk_audit:
@@ -236,7 +263,7 @@ class PsychologistAgent:
 
                 if risk_assessment.requires_crisis_response:
                     crisis_response = self.crisis_handler.get_response(risk_assessment)
-                    result["response"] = crisis_response.message
+                    result["response"] = self.sanitize_user_response(crisis_response.message)
                     result["risk_level"] = risk_assessment.risk_level.value
                     result["risk_stage"] = risk_assessment.risk_stage
                     result["requires_crisis_response"] = True
@@ -246,13 +273,17 @@ class PsychologistAgent:
                     )
 
                     self._sync_final_safety_agent(result)
+                    timing["safety"] = self._elapsed_ms(safety_start)
+                    self._finalize_timing(result, total_start)
                     return result
 
                 result["risk_level"] = risk_assessment.risk_level.value
                 result["risk_stage"] = risk_assessment.risk_stage
                 self._sync_final_safety_agent(result)
+            timing["safety"] = self._elapsed_ms(safety_start)
 
             result["pipeline_details"].setdefault("agents", {})
+            dataset_start = time.perf_counter()
             intent_result = classify_intent(user_input)
 
             counseling_recommendation = self.counseling_retriever.recommend(user_input)
@@ -273,7 +304,9 @@ class PsychologistAgent:
             result["pipeline_details"]["empathy"] = self._safe_empathy_details(
                 empathy_recommendation
             )
+            timing["dataset_retrieval"] = self._elapsed_ms(dataset_start)
 
+            memory_start = time.perf_counter()
             try:
                 memory_context = await self.memory_store.get_memory_context(session_id)
                 result["pipeline_details"]["memory_context"] = {
@@ -301,6 +334,9 @@ class PsychologistAgent:
                 session_id=session_id,
             )
             previous_followup = getattr(continuity_memory, "next_follow_up", "") if continuity_memory else ""
+            timing["memory_context"] = self._elapsed_ms(memory_start)
+
+            agent_pipeline_start = time.perf_counter()
             intent_result = self._apply_followup_continuity(
                 intent_result=intent_result,
                 previous_followup=previous_followup,
@@ -402,7 +438,9 @@ class PsychologistAgent:
                 small_action_plan=small_action_plan,
             )
             result["pipeline_details"]["agents"]["prompt_context"] = agent_context
+            timing["agent_pipeline"] = self._elapsed_ms(agent_pipeline_start)
 
+            response_start = time.perf_counter()
             if self.mock_mode:
                 response_text = self._compose_mock_response(
                     counseling_recommendation.intervention_hint,
@@ -413,7 +451,9 @@ class PsychologistAgent:
                     followup_question=followup_question,
                     small_action_text=small_action_plan.action_text if small_action_plan else "",
                 )
-                result["response"] = self._add_safety_notice(response_text)
+                result["response"] = self._add_safety_notice(
+                    self.sanitize_user_response(response_text)
+                )
                 self._sync_final_safety_agent(result)
 
                 await self.session_manager.add_to_history(
@@ -431,8 +471,11 @@ class PsychologistAgent:
                     result=result,
                 )
 
+                timing["response_generation"] = self._elapsed_ms(response_start)
+                self._finalize_timing(result, total_start)
                 return result
 
+            timing["response_generation"] = self._elapsed_ms(response_start)
             wellness_recommendation = self._get_wellness_recommendation(wellness_checkin)
             if wellness_recommendation:
                 result["pipeline_details"]["wellness"] = self._safe_wellness_details(
@@ -440,6 +483,7 @@ class PsychologistAgent:
                 )
 
             # Step 2: PII Redaction
+            non_mock_response_start = time.perf_counter()
             if self.config.enable_pii_redaction:
                 redaction_result = self.pii_redactor.redact(user_input)
                 sanitized_input = redaction_result.redacted_text
@@ -545,7 +589,7 @@ class PsychologistAgent:
                 # Handle crisis from risk audit
                 if risk_assessment.requires_crisis_response:
                     crisis_response = self.crisis_handler.get_response(risk_assessment)
-                    result["response"] = crisis_response.message
+                    result["response"] = self.sanitize_user_response(crisis_response.message)
                     result["risk_level"] = risk_assessment.risk_level.value
                     result["risk_stage"] = risk_assessment.risk_stage
                     result["requires_crisis_response"] = True
@@ -593,11 +637,13 @@ class PsychologistAgent:
                 messages=local_prompt.to_messages()
             )
 
-            response_text = generation_result.text
+            response_text = self.sanitize_user_response(generation_result.text)
             if self.mock_mode and wellness_recommendation and wellness_recommendation.support_hint:
                 response_text = self._merge_wellness_hint(response_text, wellness_recommendation.support_hint)
 
-            result["response"] = self._add_safety_notice(response_text)
+            result["response"] = self._add_safety_notice(
+                self.sanitize_user_response(response_text)
+            )
             self._sync_final_safety_agent(result)
 
             # Step 8: Update memory
@@ -616,6 +662,8 @@ class PsychologistAgent:
                 result=result,
             )
 
+            timing["response_generation"] = self._elapsed_ms(non_mock_response_start)
+            self._finalize_timing(result, total_start)
             return result
 
         except Exception as e:
@@ -630,8 +678,22 @@ class PsychologistAgent:
 
             result["response"] = "I apologize, but I'm having trouble processing your message right now. If you're in crisis, please call 988 for immediate support."
             result["error"] = str(e)
+            self._finalize_timing(result, total_start)
 
             return result
+
+    @staticmethod
+    def _elapsed_ms(start_time: float) -> float:
+        return round((time.perf_counter() - start_time) * 1000, 3)
+
+    def _finalize_timing(self, result: Dict[str, Any], total_start: float) -> None:
+        timing = result.setdefault("pipeline_details", {}).setdefault("timing", {})
+        timing.setdefault("safety", 0.0)
+        timing.setdefault("dataset_retrieval", 0.0)
+        timing.setdefault("memory_context", 0.0)
+        timing.setdefault("agent_pipeline", 0.0)
+        timing.setdefault("response_generation", 0.0)
+        timing["total"] = self._elapsed_ms(total_start)
 
     def _risk_stage_from_level(self, risk_level: str) -> str:
         """Convert technical risk levels into the Korean-facing stage labels."""
@@ -974,6 +1036,33 @@ class PsychologistAgent:
             return response_text
         return f"{response_text}{notice}"
 
+    def sanitize_user_response(self, response_text: str) -> str:
+        """Remove internal guidance fragments from user-facing responses."""
+        if not isinstance(response_text, str):
+            return ""
+
+        normalized = response_text.replace("\r\n", "\n").replace("\r", "\n")
+        safe_blocks: List[str] = []
+        for block in normalized.split("\n\n"):
+            lines = []
+            for line in block.split("\n"):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if any(marker in stripped for marker in INTERNAL_RESPONSE_MARKERS):
+                    continue
+                lines.append(line)
+            if lines:
+                safe_blocks.append("\n".join(lines).strip())
+
+        sanitized = "\n\n".join(safe_blocks).strip()
+        if sanitized:
+            return sanitized
+
+        if any(number in normalized for number in ("109", "119", "112", "988", "911")):
+            return normalized.strip()
+        return "지금 느끼는 부담을 혼자 다 감당하지 않아도 괜찮아요. 오늘은 가장 작은 한 가지부터 같이 정리해볼게요."
+
     def _intent_labels(self, intent_result: Any) -> List[str]:
         labels = []
         primary = getattr(intent_result, "primary_intent", "")
@@ -1019,6 +1108,13 @@ class PsychologistAgent:
             "심리상담 데이터 기반 힌트",
             "공감형 대화 기반 힌트",
             "웰니스 기반 힌트",
+            "내담자의 표현을 반영",
+            "핵심 감정을 명료화",
+            "intervention_hint",
+            "empathy_style_hint",
+            "support_hint",
+            "guidance",
+            "therapeutic_guidance",
         )
         if any(marker in compact for marker in blocked_markers):
             return ""

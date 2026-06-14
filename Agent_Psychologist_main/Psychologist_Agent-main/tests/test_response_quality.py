@@ -87,6 +87,18 @@ def test_sleep_problem_response_does_not_mix_low_mood_sentence():
     assert "우울하시군요" not in result["response"]
 
 
+def test_internal_counseling_instruction_is_not_exposed():
+    result = asyncio.run(
+        _run_message(
+            "요즘 잠을 못 자고 불안해요",
+            counseling_hint="내담자의 표현을 반영하고 핵심 감정을 명료화하세요.",
+        )
+    )
+
+    assert "내담자의 표현을 반영" not in result["response"]
+    assert "핵심 감정을 명료화" not in result["response"]
+
+
 def test_low_mood_response_centers_low_energy_empathy():
     result = asyncio.run(_run_message("요즘 너무 무기력하고 아무 기운이 없어요"))
 
@@ -134,6 +146,10 @@ def test_dataset_hint_labels_are_not_exposed():
     assert "상담 참고" not in result["response"]
     assert "공감 참고" not in result["response"]
     assert "웰니스 참고" not in result["response"]
+    assert "intervention_hint" not in result["response"]
+    assert "empathy_style_hint" not in result["response"]
+    assert "support_hint" not in result["response"]
+    assert "therapeutic_guidance" not in result["response"]
 
 
 def test_disclaimer_is_not_duplicated():

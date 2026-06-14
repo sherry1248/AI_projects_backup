@@ -18,6 +18,9 @@ logger = setup_logging("demo_app")
 
 agent: Optional["PsychologistAgent"] = None
 current_session_id: Optional[str] = None
+last_agent_result: Optional[Dict[str, Any]] = None
+
+ChatMessage = Dict[str, str]
 
 RISK_KEYWORDS = (
     "죽고 싶",
@@ -255,6 +258,7 @@ def build_agent_pipeline_markdown(
     result = result or {}
     details = _pipeline_details(result)
     agents = _agent_details(result)
+    timing = _as_dict(details.get("timing"))
 
     safety = _final_safety_summary(
         summary,
@@ -264,6 +268,7 @@ def build_agent_pipeline_markdown(
     emotion = _as_dict(agents.get("emotion"))
     intent = _as_dict(agents.get("intent"))
     memory = _as_dict(agents.get("recall")) or _as_dict(agents.get("memory")) or _as_dict(details.get("memory_context"))
+    memory = _as_dict(agents.get("memory_recall")) or memory
     state = _as_dict(agents.get("state")) or _as_dict(agents.get("emotional_state"))
     decision = _as_dict(agents.get("decision"))
 
@@ -337,6 +342,19 @@ def build_agent_pipeline_markdown(
         _safe_key_value("safety_notice_added", bool(summary.get("requires_crisis_response"))),
         _safe_key_value("mode", result.get("response_source") or summary.get("response_source")),
     ]
+    timing_lines = []
+    for key in (
+        "initialize",
+        "safety",
+        "dataset_retrieval",
+        "memory_context",
+        "agent_pipeline",
+        "response_generation",
+        "total",
+    ):
+        rendered = _safe_key_value(key, timing.get(key))
+        if rendered:
+            timing_lines.append(rendered)
 
     sections = [
         _section("Safety Agent", safety_lines),
@@ -347,6 +365,7 @@ def build_agent_pipeline_markdown(
         _section("Emotional State Agent", state_lines),
         _section("Decision Agent", decision_lines),
         _section("Response Agent", response_lines),
+        _section("Timing", timing_lines),
     ]
     return wrap_card("Agent Pipeline View", "\n\n".join(sections))
 
@@ -356,6 +375,7 @@ def build_crisis_markdown() -> str:
         "위기 안내 카드",
         "\n".join(
             [
+                "- 위험 단계: 위험",
                 "- 지금은 안전이 가장 중요해요",
                 "- 109",
                 "- 119",
@@ -420,9 +440,10 @@ def build_mock_summary(
     source: str = "mock",
 ) -> Dict[str, Any]:
     stage = risk_stage or infer_risk_stage(wellness_checkin)
+    risk_level = "attention" if stage == "관심" else "high" if stage == "위험" else "moderate"
     return {
         "session_id": "",
-        "risk_level": "attention" if stage == "관심" else "moderate",
+        "risk_level": risk_level,
         "risk_stage": stage,
         "requires_crisis_response": False,
         "counseling_hint": build_counseling_hint(message, wellness_checkin),
@@ -445,9 +466,115 @@ def build_general_markdown(
         [
             wrap_card("상담 응답 카드", f"- 위험 단계: {escape_text(risk_stage)}"),
             wrap_card("AI 상담 응답", safe_body_text(visible_response)),
-            build_agent_pipeline_markdown(summary, result),
         ]
     )
+
+
+def build_chat_response_text(
+    summary: Dict[str, Any],
+    response_text: str,
+) -> str:
+    """Return only user-facing chat text, without debug pipeline or duplicate notice."""
+    risk_stage = (summary or {}).get("risk_stage", "관심")
+    return _strip_default_safety_notice(response_text, risk_stage=risk_stage).strip()
+
+
+def save_emotion_diary(
+    emotion_label: str,
+    mood_score: int,
+    sleep_score: int,
+    anxiety_score: int,
+    loneliness_score: int,
+    diary_line: str,
+    save_consent: bool,
+) -> Tuple[Dict[str, Any], str]:
+    """Store only structured diary values for the demo report."""
+    text_length = len((diary_line or "").strip())
+    if text_length == 0:
+        length_bucket = "empty"
+    elif text_length <= 20:
+        length_bucket = "short"
+    elif text_length <= 60:
+        length_bucket = "medium"
+    else:
+        length_bucket = "long"
+
+    diary_state = {
+        "emotion_label": str(emotion_label or "선택 안 함"),
+        "mood_score": int(mood_score),
+        "sleep_score": int(sleep_score),
+        "anxiety_score": int(anxiety_score),
+        "loneliness_score": int(loneliness_score),
+        "has_diary_text": bool(text_length),
+        "diary_length_bucket": length_bucket,
+        "save_consent": bool(save_consent),
+    }
+
+    summary_lines = [
+        f"- 오늘의 감정: {escape_text(diary_state['emotion_label'])}",
+        f"- 기분/수면/불안/외로움: {mood_score}/{sleep_score}/{anxiety_score}/{loneliness_score}",
+        f"- 한 줄 일기: {'입력됨' if text_length else '미입력'}",
+        "- 일기 원문은 저장하지 않고 구조화 값만 보고서에 반영합니다.",
+    ]
+    if not save_consent:
+        summary_lines.append("- 기록 저장 동의가 꺼져 있어 데모 화면 안에서만 임시 반영됩니다.")
+
+    return diary_state, wrap_card("감정일기 저장 요약", "\n".join(summary_lines))
+
+
+def build_service_report(
+    summary: Optional[Dict[str, Any]],
+    diary_state: Optional[Dict[str, Any]],
+) -> str:
+    """Build a user-facing structured report without raw text."""
+    summary = summary or {}
+    diary_state = diary_state or {}
+    result = last_agent_result or {}
+    agents = _agent_details(result)
+    intent = _as_dict(agents.get("intent"))
+    state = _as_dict(agents.get("emotional_state"))
+    decision = _as_dict(agents.get("decision"))
+    followup = _as_dict(agents.get("followup"))
+    small_action = _as_dict(agents.get("small_action"))
+
+    risk_stage = summary.get("risk_stage") or result.get("risk_stage") or "관심"
+    intent_labels = _extract_labels(intent)
+    state_summary = _safe_list(state.get("state_summary"))
+    primary_intent = intent.get("primary_intent")
+    primary_action = decision.get("primary_action") or decision.get("action")
+    action_text = small_action.get("action_text") if isinstance(small_action.get("action_text"), str) else ""
+    followup_question = followup.get("question") if isinstance(followup.get("question"), str) else ""
+
+    concern_keywords = []
+    if isinstance(primary_intent, str) and primary_intent:
+        concern_keywords.append(primary_intent)
+    concern_keywords.extend(intent_labels)
+    concern_keywords = _safe_list(concern_keywords, max_items=4)
+
+    diary_lines = []
+    if diary_state:
+        diary_lines = [
+            _safe_key_value("emotion_label", diary_state.get("emotion_label")),
+            _safe_key_value("mood_score", diary_state.get("mood_score")),
+            _safe_key_value("sleep_score", diary_state.get("sleep_score")),
+            _safe_key_value("anxiety_score", diary_state.get("anxiety_score")),
+            _safe_key_value("loneliness_score", diary_state.get("loneliness_score")),
+            _safe_key_value("has_diary_text", diary_state.get("has_diary_text")),
+        ]
+
+    report_lines = [
+        f"- 주요 감정: {', '.join(state_summary) if state_summary else escape_text(str(diary_state.get('emotion_label', '아직 없음')))}",
+        f"- 주요 고민 키워드: {', '.join(concern_keywords) if concern_keywords else '아직 없음'}",
+        f"- 위험 단계: {escape_text(risk_stage)}",
+        f"- 추천 안정화 활동: {escape_text(action_text) if action_text and len(action_text) <= 120 else '상담 채팅 후 표시됩니다.'}",
+        f"- 다음 follow-up 질문: {escape_text(followup_question) if followup_question and len(followup_question) <= 120 else '상담 채팅 후 표시됩니다.'}",
+        f"- 전문가 상담 안내: {'긴급 연락 또는 상담센터 연결을 우선 권장합니다.' if risk_stage in {'주의', '위험'} else '필요하면 상담센터 이용을 함께 검토할 수 있습니다.'}",
+    ]
+
+    sections = [wrap_card("마음정리 보고서", "\n".join(report_lines))]
+    if diary_lines:
+        sections.append(wrap_card("감정 체크 요약", "\n".join(f"- {line}" for line in diary_lines if line)))
+    return "\n\n".join(sections)
 
 
 def build_error_markdown(error_text: str) -> str:
@@ -484,14 +611,15 @@ def build_summary(result: Dict[str, Any], wellness_checkin: Dict[str, int]) -> D
         "risk_level": result.get("risk_level", "none"),
         "risk_stage": result.get("risk_stage", "관심"),
         "requires_crisis_response": result.get("requires_crisis_response", False),
-        "counseling_hint": result.get("counseling_hint", ""),
-        "empathy_style_hint": result.get("empathy_style_hint", ""),
-        "wellness_hint": result.get("wellness_hint", "") or wellness.get("support_hint", ""),
+        "counseling_hint": "present" if result.get("counseling_hint") else "",
+        "empathy_style_hint": "present" if result.get("empathy_style_hint") else "",
+        "wellness_hint": "present" if (result.get("wellness_hint") or wellness.get("support_hint")) else "",
         "counseling_record_id": details.get("counseling", {}).get("matched_record_id", "") if isinstance(details, dict) else "",
         "empathy_record_id": details.get("empathy", {}).get("matched_record_id", "") if isinstance(details, dict) else "",
         "wellness_record_id": wellness.get("matched_record_id", ""),
         "safety_action": safety.get("action", ""),
         "wellness_checkin": wellness_checkin,
+        "response_preview": result.get("response", ""),
     }
 
 
@@ -505,6 +633,7 @@ async def handle_chat(
     energy_score: int,
     stress_score: int,
 ) -> Tuple[str, Dict[str, Any]]:
+    global last_agent_result
     wellness_checkin = build_wellness_checkin(
         mood_score=mood_score,
         anxiety_score=anxiety_score,
@@ -531,9 +660,10 @@ async def handle_chat(
                 message_text,
                 wellness_checkin,
                 "위기 신호가 감지되어 즉시 안전 안내를 우선했습니다.",
-                risk_stage="주의",
+                risk_stage="위험",
                 source="crisis-fallback",
             )
+            last_agent_result = None
             return build_crisis_markdown(), summary
 
         active_agent = await get_agent()
@@ -545,6 +675,7 @@ async def handle_chat(
         )
         if not isinstance(result, dict):
             raise TypeError("Agent response must be a dictionary.")
+        last_agent_result = result
 
         response_text = str(result.get("response", "") or "응답이 비어 있습니다.")
         summary = build_summary(result, wellness_checkin)
@@ -563,6 +694,7 @@ async def handle_chat(
                 fallback_response,
                 source="mock-fallback",
             )
+            last_agent_result = None
             return build_general_markdown(summary, fallback_response), summary
         except Exception as fallback_exc:
             logger.exception("Fallback generation failed")
@@ -574,6 +706,73 @@ async def handle_chat(
             }
 
 
+async def handle_chat_ui(
+    message: str,
+    chat_history: Optional[List[Any]],
+    mood_score: int,
+    anxiety_score: int,
+    loneliness_score: int,
+    sleep_quality: int,
+    meal_status: int,
+    energy_score: int,
+    stress_score: int,
+) -> Tuple[List[ChatMessage], str, str, Dict[str, Any], str]:
+    """Handle one chat turn for the user-facing Gradio chat UI."""
+    history = normalize_chat_history(chat_history)
+    message_text = (message or "").strip()
+    if not message_text:
+        return history, "", "", {"empty_message": True}, ""
+
+    markdown, summary = await handle_chat(
+        message_text,
+        mood_score,
+        anxiety_score,
+        loneliness_score,
+        sleep_quality,
+        meal_status,
+        energy_score,
+        stress_score,
+    )
+
+    response_text = markdown
+    pipeline_markdown = ""
+    if not summary.get("empty_message"):
+        pipeline_markdown = build_agent_pipeline_markdown(summary, last_agent_result)
+        response_text = build_chat_response_text(
+            summary,
+            str(summary.get("response_preview") or markdown),
+        )
+
+    history.extend(
+        [
+            {"role": "user", "content": message_text},
+            {"role": "assistant", "content": response_text},
+        ]
+    )
+    return history, "", pipeline_markdown, summary, "응답이 준비됐어요."
+
+
+def normalize_chat_history(chat_history: Optional[List[Any]]) -> List[ChatMessage]:
+    """Return Gradio Chatbot messages format, accepting older tuple history safely."""
+    normalized: List[ChatMessage] = []
+    for item in chat_history or []:
+        if isinstance(item, dict):
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                normalized.append({"role": role, "content": content})
+            continue
+
+        if isinstance(item, (tuple, list)) and len(item) == 2:
+            user_message, assistant_message = item
+            if isinstance(user_message, str) and user_message:
+                normalized.append({"role": "user", "content": user_message})
+            if isinstance(assistant_message, str) and assistant_message:
+                normalized.append({"role": "assistant", "content": assistant_message})
+
+    return normalized
+
+
 def create_demo():
     """Create and return the Gradio demo interface."""
     try:
@@ -581,94 +780,137 @@ def create_demo():
     except ImportError as exc:
         raise ImportError("gradio is required for the demo. Install with: pip install gradio") from exc
     custom_css = """
-    body, .gradio-container, .main, .wrap { background: #fffaf3 !important; }
-    .demo-body { background: #fffaf3; }
-    .phone-frame { width: 100%; max-width: 430px; margin: 20px auto; background: #ffffff; border-radius: 20px; box-shadow: 0 12px 30px rgba(0,0,0,0.08); padding: 18px; }
-    .app-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .app-title { font-size:20px; font-weight:700; color:#2b2b2b; }
-    .app-sub { font-size:12px; color:#6b6b6b; margin-top:6px }
-    .character { font-size:52px; text-align:center; }
-    .greeting { background:#eef7ff; border-radius:14px; padding:10px 14px; display:inline-block; color:#1b4f72; margin-top:8px }
-    .status-card { background:#fbfdff; border-radius:12px; padding:12px; margin-top:12px; box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);} 
-    .cta { width:100%; border-radius:12px; padding:14px; font-weight:700; font-size:16px }
-    .example-button { margin-right:8px }
-    .output-card { background:#ffffff; border-radius:12px; padding:12px; margin-top:12px; box-shadow: 0 6px 18px rgba(0,0,0,0.04); }
-    .crisis { background: linear-gradient(180deg, #ffecec, #fff5f5); border-left:4px solid #ff6767; }
-    .small-note { font-size:11px; color:#7a7a7a; text-align:center; margin-top:10px }
-    .bubble { border-radius:14px; padding:10px 12px; display:inline-block }
-    .bubble.ai { background:#eef7ff; color:#0b4a70 }
+    body, .gradio-container, .main, .wrap { background: #f7f8fb !important; }
+    .chat-shell { max-width: 980px; margin: 18px auto; }
+    .app-title { font-size:24px; font-weight:700; color:#202124; margin-bottom:2px; }
+    .app-sub { font-size:13px; color:#5f6368; margin-bottom:14px; }
+    .chatbot { border-radius:12px; min-height:460px; }
+    .input-row textarea { border-radius:10px !important; }
+    .cta { border-radius:10px; font-weight:700; }
+    .status-line { min-height:28px; color:#4c6f8f; font-size:13px; }
+    .small-note { font-size:12px; color:#6f7378; text-align:center; margin-top:8px; }
+    .output-card { background:#ffffff; border-radius:8px; padding:12px; margin-top:8px; border:1px solid #e5e7eb; }
+    .crisis { background:#fff1f1; border-left:4px solid #d93025; }
     """
 
-    with gr.Blocks(title="마음온 - 모바일 상담 데모", css=custom_css) as demo:
-        gr.HTML("<div class='demo-body'>")
-        with gr.Column(elem_id="phone-col"):
-            with gr.Column(elem_classes="phone-frame"):
-                gr.Markdown("""
-                <div class='app-header'>
-                  <div>
-                    <div class='app-title'>마음온</div>
-                    <div class='app-sub'>오늘의 마음을 정리하고, 필요한 도움을 함께 찾아볼게요.</div>
-                  </div>
-                  <div>💬 리포트</div>
-                </div>
-                """, elem_id="header")
+    with gr.Blocks(title="Psychologist AI Agent", css=custom_css) as demo:
+        with gr.Column(elem_classes="chat-shell"):
+            gr.Markdown(
+                "<div class='app-title'>Psychologist AI Agent</div>"
+                "<div class='app-sub'>2030 청년을 위한 익명 정서 지원, 감정 체크, 안정화 활동 추천, 위험 신호 조기 발견 데모입니다.</div>"
+            )
+            chat_state = gr.State([])
+            diary_state = gr.State({})
+            summary_output = gr.JSON({}, visible=False)
 
-                gr.Markdown("<div class='character'>🦊</div>")
-                gr.Markdown("<div class='greeting bubble ai'>안녕하세요. 오늘 어떤 마음이었는지 편하게 이야기해 주세요.</div>")
-
-                # Message input
-                message = gr.Textbox(
-                    label="오늘 어떤 일이 있었나요?",
-                    placeholder="예: 요즘 외롭고 잠을 잘 못 자요.",
-                    lines=4,
+            with gr.Row():
+                anonymous_mode = gr.Checkbox(value=True, label="익명으로 시작하기")
+                save_consent = gr.Checkbox(value=False, label="기록 저장 동의")
+            gr.Markdown(
+                wrap_card(
+                    "AI 첫 인사",
+                    "안녕하세요. 이름을 말하지 않아도 괜찮아요. 지금 마음에 남아 있는 일을 한 문장부터 편하게 적어주세요.",
                 )
+            )
 
-                # Example buttons
-                with gr.Row():
-                    def example_text(t: str):
-                        return t
+            with gr.Tabs():
+                with gr.TabItem("상담 채팅"):
+                    chatbot = gr.Chatbot(
+                        label="상담 채팅",
+                        elem_classes="chatbot",
+                        height=460,
+                    )
+                    status_output = gr.Markdown("", elem_classes="status-line")
 
-                    ex_normal = gr.Button("일반 예시", elem_classes="example-button")
-                    ex_anxiety = gr.Button("불안 예시", elem_classes="example-button")
-                    ex_risk = gr.Button("위험 예시", elem_classes="example-button")
+                    with gr.Row(elem_classes="input-row"):
+                        message = gr.Textbox(
+                            label="메시지",
+                            placeholder="예: 요즘 잠을 못 자고 불안해요.",
+                            lines=2,
+                            scale=5,
+                        )
+                        submit = gr.Button("보내기", variant="primary", elem_classes="cta", scale=1)
 
-                    ex_normal.click(lambda: example_text("요즘 너무 외롭고 잠을 잘 못 자요."), outputs=message)
-                    ex_anxiety.click(lambda: example_text("사람 만나는 게 부담스럽고 계속 불안해요."), outputs=message)
-                    ex_risk.click(lambda: example_text("죽고 싶어요."), outputs=message)
+                    with gr.Row():
+                        def example_text(t: str):
+                            return t
 
-                # Wellness checkin
-                gr.Markdown("<div class='status-card'><strong>오늘의 상태 체크</strong><div style='font-size:12px;color:#6b6b6b;'>선택 입력입니다. 잘 모르겠으면 보통으로 두어도 괜찮아요.</div></div>")
+                        ex_normal = gr.Button("외로움 예시", elem_classes="example-button")
+                        ex_anxiety = gr.Button("불안 예시", elem_classes="example-button")
+                        ex_risk = gr.Button("위험 예시", elem_classes="example-button")
 
-                with gr.Row():
-                    mood_score = gr.Slider(1, 5, value=3, step=1, label="오늘 기분")
-                    anxiety_score = gr.Slider(1, 5, value=3, step=1, label="불안감")
+                        ex_normal.click(lambda: example_text("요즘 너무 외롭고 잠을 잘 못 자요."), outputs=message)
+                        ex_anxiety.click(lambda: example_text("사람 만나는 게 부담스럽고 계속 불안해요."), outputs=message)
+                        ex_risk.click(lambda: example_text("죽고 싶어요."), outputs=message)
 
-                with gr.Row():
-                    loneliness_score = gr.Slider(1, 5, value=3, step=1, label="외로움")
-                    sleep_quality = gr.Slider(1, 5, value=3, step=1, label="수면 상태")
+                    with gr.Accordion("상태 체크", open=False):
+                        gr.Markdown("선택 입력입니다. 잘 모르겠으면 보통으로 두어도 괜찮아요.")
+                        with gr.Row():
+                            mood_score = gr.Slider(1, 5, value=3, step=1, label="오늘 기분")
+                            anxiety_score = gr.Slider(1, 5, value=3, step=1, label="불안감")
+                        with gr.Row():
+                            loneliness_score = gr.Slider(1, 5, value=3, step=1, label="외로움")
+                            sleep_quality = gr.Slider(1, 5, value=3, step=1, label="수면 상태")
+                        with gr.Row():
+                            meal_status = gr.Slider(1, 5, value=3, step=1, label="식사 상태")
+                            energy_score = gr.Slider(1, 5, value=3, step=1, label="에너지")
+                        stress_score = gr.Slider(1, 5, value=3, step=1, label="스트레스")
 
-                with gr.Row():
-                    meal_status = gr.Slider(1, 5, value=3, step=1, label="식사 상태")
-                    energy_score = gr.Slider(1, 5, value=3, step=1, label="에너지")
+                with gr.TabItem("감정일기"):
+                    diary_emotion = gr.Dropdown(
+                        ["불안", "외로움", "스트레스", "무기력", "평온", "기타"],
+                        value="불안",
+                        label="오늘의 감정",
+                    )
+                    with gr.Row():
+                        diary_mood = gr.Slider(1, 5, value=3, step=1, label="기분 점수")
+                        diary_sleep = gr.Slider(1, 5, value=3, step=1, label="수면 점수")
+                    with gr.Row():
+                        diary_anxiety = gr.Slider(1, 5, value=3, step=1, label="불안 점수")
+                        diary_loneliness = gr.Slider(1, 5, value=3, step=1, label="외로움 점수")
+                    diary_line = gr.Textbox(
+                        label="한 줄 일기",
+                        placeholder="원문은 저장하지 않고 입력 여부와 구조화 값만 반영합니다.",
+                        lines=2,
+                    )
+                    diary_save = gr.Button("감정일기 저장", variant="primary")
+                    diary_output = gr.Markdown("")
 
-                stress_score = gr.Slider(1, 5, value=3, step=1, label="스트레스")
+                with gr.TabItem("마음정리 보고서"):
+                    report_output = gr.Markdown(build_service_report({}, {}))
 
-                submit = gr.Button("상담 시작하기", variant="primary", elem_classes="cta")
+                with gr.TabItem("전문가 상담 연결"):
+                    gr.Markdown(
+                        wrap_card(
+                            "전문가 상담 연결",
+                            "\n".join(
+                                [
+                                    "- 위기 상황: 109, 119, 112에 즉시 연락하세요.",
+                                    "- 가까운 정신건강복지센터나 상담센터 이용을 권장합니다.",
+                                    "- 혼자 있기 어렵다면 가까운 사람에게 지금 바로 연락하세요.",
+                                    "- 이 AI는 의료 진단이나 치료를 하지 않으며 전문 상담사를 대체하지 않습니다.",
+                                ]
+                            ),
+                            crisis=True,
+                        )
+                    )
 
-                # Output area
-                response_output = gr.Markdown("", label="상담 결과")
-                summary_output = gr.JSON({}, visible=False)
+            with gr.Accordion("Agent Pipeline Details", open=False):
+                pipeline_output = gr.Markdown("")
 
-                # Small footer note
-                gr.Markdown("<div class='small-note'>본 서비스는 전문 상담사나 의료진을 대체하지 않습니다. 위기 상황에서는 즉시 109, 119, 112 또는 가까운 사람에게 도움을 요청하세요.</div>")
+            gr.Markdown(
+                "<div class='small-note'>본 서비스는 전문 상담사나 의료진을 대체하지 않습니다. "
+                "위기 상황에서는 즉시 109, 119, 112 또는 가까운 사람에게 도움을 요청하세요.</div>"
+            )
 
-        gr.HTML("</div>")
-
-        # click binding
         submit.click(
-            handle_chat,
+            lambda: "응답을 준비하고 있어요...",
+            outputs=status_output,
+        ).then(
+            handle_chat_ui,
             inputs=[
                 message,
+                chat_state,
                 mood_score,
                 anxiety_score,
                 loneliness_score,
@@ -677,7 +919,33 @@ def create_demo():
                 energy_score,
                 stress_score,
             ],
-            outputs=[response_output, summary_output],
+            outputs=[chatbot, message, pipeline_output, summary_output, status_output],
+        ).then(
+            build_service_report,
+            inputs=[summary_output, diary_state],
+            outputs=report_output,
+        ).then(
+            lambda history: history,
+            inputs=chatbot,
+            outputs=chat_state,
+        )
+
+        diary_save.click(
+            save_emotion_diary,
+            inputs=[
+                diary_emotion,
+                diary_mood,
+                diary_sleep,
+                diary_anxiety,
+                diary_loneliness,
+                diary_line,
+                save_consent,
+            ],
+            outputs=[diary_state, diary_output],
+        ).then(
+            build_service_report,
+            inputs=[summary_output, diary_state],
+            outputs=report_output,
         )
 
     return demo

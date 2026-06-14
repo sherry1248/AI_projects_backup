@@ -1,5 +1,8 @@
 """Tests for hiding internal hints in the demo UI."""
 
+import inspect
+
+from demo import app as demo_app
 from demo.app import build_general_markdown
 
 
@@ -22,6 +25,7 @@ def test_general_markdown_hides_internal_hint_cards():
     assert "internal counseling hint" not in markdown
     assert "internal empathy hint" not in markdown
     assert "internal wellness hint" not in markdown
+    assert "Agent Pipeline View" not in markdown
 
 
 def test_general_markdown_strips_default_safety_notice_for_non_crisis():
@@ -36,3 +40,19 @@ def test_general_markdown_strips_default_safety_notice_for_non_crisis():
 
     assert "수면과 불안을 먼저 살펴볼게요." in markdown
     assert notice not in markdown
+
+
+def test_demo_source_uses_chatbot_and_collapsed_pipeline_panel():
+    source = inspect.getsource(demo_app.create_demo)
+
+    assert "gr.Chatbot" in source
+    assert "Agent Pipeline Details" in source
+    assert "open=False" in source
+
+
+def test_demo_default_screen_does_not_render_internal_hint_cards():
+    source = inspect.getsource(demo_app.create_demo)
+
+    assert "심리상담 데이터 기반 힌트" not in source
+    assert "공감형 대화 기반 힌트" not in source
+    assert "웰니스 기반 힌트" not in source

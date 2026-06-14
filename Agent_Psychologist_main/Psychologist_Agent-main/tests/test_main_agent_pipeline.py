@@ -374,3 +374,77 @@ def test_internal_hint_labels_are_not_exposed_in_response():
     assert "상담 참고" not in result["response"]
     assert "공감 참고" not in result["response"]
     assert "웰니스 참고" not in result["response"]
+
+
+def test_pipeline_details_include_debug_timing_without_raw_text():
+    raw_message = "요즘 잠을 못 자고 불안해요"
+    result = asyncio.run(_run_message(raw_message))
+
+    timing = result["pipeline_details"].get("timing")
+
+    assert isinstance(timing, dict)
+    for key in (
+        "safety",
+        "dataset_retrieval",
+        "memory_context",
+        "agent_pipeline",
+        "response_generation",
+        "total",
+    ):
+        assert key in timing
+        assert isinstance(timing[key], (int, float))
+        assert timing[key] >= 0
+    assert raw_message not in str(timing)
+
+
+def test_mock_mode_does_not_call_cloud_or_local_generation():
+    agent = PsychologistAgent(
+        config=AgentConfig(
+            enable_safety_check=False,
+            enable_rag=False,
+            enable_audit_logging=False,
+        ),
+        mock_mode=True,
+    )
+    agent._initialized = True
+    agent.cloud_client = SimpleNamespace(analyze=AsyncMock())
+    agent.local_generator = SimpleNamespace(create_chat_completion=AsyncMock())
+    agent.counseling_retriever = SimpleNamespace(
+        recommend=Mock(
+            return_value=SimpleNamespace(
+                intervention_hint="작은 단계를 제안하세요.",
+                matched_record_id="counseling-test",
+                category="sleep",
+                score=1.0,
+            )
+        )
+    )
+    agent.empathy_retriever = SimpleNamespace(
+        recommend=Mock(
+            return_value=SimpleNamespace(
+                empathy_style_hint="차분하게 공감하세요.",
+                emotion_label="불안",
+                empathy_label="위로",
+                matched_record_id="empathy-test",
+                score=1.0,
+            )
+        )
+    )
+    agent.wellness_recommender = SimpleNamespace(recommend=Mock(return_value=None))
+    agent.memory_store = SimpleNamespace(
+        get_memory_context=AsyncMock(
+            return_value=SimpleNamespace(
+                recent_summaries=[],
+                facts=[],
+                directives=[],
+                emotional_trend=[],
+            )
+        )
+    )
+    agent.session_manager = SimpleNamespace(add_to_history=AsyncMock())
+
+    result = asyncio.run(agent.process_message("요즘 잠을 못 자고 불안해요", "session-1"))
+
+    assert result["response"]
+    agent.cloud_client.analyze.assert_not_called()
+    agent.local_generator.create_chat_completion.assert_not_called()

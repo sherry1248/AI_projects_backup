@@ -1,5 +1,9 @@
 """Tests for the demo Agent Pipeline View helper."""
 
+import asyncio
+from types import SimpleNamespace
+
+from demo import app as demo_app
 from demo.app import build_agent_pipeline_markdown
 
 
@@ -58,6 +62,26 @@ def test_pipeline_markdown_does_not_include_raw_user_input():
     )
 
     assert raw_input not in markdown
+
+
+def test_pipeline_markdown_does_not_include_raw_memory_transcript():
+    raw_memory = "raw memory transcript should not be visible"
+    markdown = build_agent_pipeline_markdown(
+        {"risk_stage": "관심"},
+        {
+            "pipeline_details": {
+                "agents": {
+                    "memory_recall": {
+                        "recalled_keys": ["next_follow_up"],
+                        "conversation": raw_memory,
+                        "content": raw_memory,
+                    }
+                }
+            }
+        },
+    )
+
+    assert raw_memory not in markdown
 
 
 def test_pipeline_markdown_does_not_display_raw_looking_keys():
@@ -182,6 +206,24 @@ def test_pipeline_markdown_uses_agent_results_when_available():
     assert "response body is not displayed" not in markdown
 
 
+def test_pipeline_markdown_uses_memory_recall_agent_results():
+    markdown = build_agent_pipeline_markdown(
+        {"risk_stage": "관심"},
+        {
+            "pipeline_details": {
+                "agents": {
+                    "memory_recall": {
+                        "recalled_keys": ["next_follow_up", "previous_emotional_state"],
+                        "has_next_follow_up": True,
+                    }
+                }
+            }
+        },
+    )
+
+    assert "recalled_keys: next_follow_up, previous_emotional_state" in markdown
+
+
 def test_dataset_strategy_agent_shows_hint_keys_not_hint_text():
     raw_hint = "이 힌트 문장 전체는 표시되면 안 됩니다"
 
@@ -250,3 +292,36 @@ def test_dataset_strategy_flags_low_confidence_category_without_raw_text():
     assert "score=0.0" in markdown
     assert "low_confidence_match=True" in markdown
     assert raw_text not in markdown
+
+
+def test_get_agent_caches_initialized_instance(monkeypatch):
+    class FakeSessionManager:
+        async def create_session(self):
+            return SimpleNamespace(session_id="session-1")
+
+    class FakeAgent:
+        created = 0
+        initialized = 0
+
+        def __init__(self):
+            FakeAgent.created += 1
+            self.session_manager = FakeSessionManager()
+
+        async def initialize(self):
+            FakeAgent.initialized += 1
+
+    async def scenario():
+        demo_app.agent = None
+        demo_app.current_session_id = None
+        monkeypatch.setattr("src.main.PsychologistAgent", FakeAgent)
+        first = await demo_app.get_agent()
+        second = await demo_app.get_agent()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert first is second
+    assert FakeAgent.created == 1
+    assert FakeAgent.initialized == 1
+    demo_app.agent = None
+    demo_app.current_session_id = None
