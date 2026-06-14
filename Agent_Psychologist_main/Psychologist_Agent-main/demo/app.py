@@ -21,6 +21,10 @@ current_session_id: Optional[str] = None
 last_agent_result: Optional[Dict[str, Any]] = None
 
 ChatMessage = Dict[str, str]
+INITIAL_ASSISTANT_MESSAGE = "안녕하세요. 오늘 마음 상태는 어떤가요? 편하게 한 문장으로 이야기해도 괜찮아요."
+INITIAL_CHAT_HISTORY: List[ChatMessage] = [
+    {"role": "assistant", "content": INITIAL_ASSISTANT_MESSAGE}
+]
 
 RISK_KEYWORDS = (
     "죽고 싶",
@@ -60,6 +64,17 @@ AGENT_SECTION_TITLES = (
     "Decision Agent",
     "Response Agent",
 )
+
+INTENT_LABEL_KO = {
+    "SLEEP_PROBLEM": "수면 문제",
+    "ANXIETY_SUPPORT": "불안",
+    "STRESS_SUPPORT": "스트레스",
+    "LOW_MOOD_SUPPORT": "무기력",
+    "NEED_EMPATHY": "공감 필요",
+    "NEED_ADVICE": "조언 필요",
+    "LONELINESS_SUPPORT": "고립감",
+    "CRISIS_RISK": "위험 신호",
+}
 
 
 async def get_agent() -> "PsychologistAgent":
@@ -178,6 +193,26 @@ def _extract_labels(agent_data: Dict[str, Any]) -> List[str]:
     if isinstance(primary, str):
         return _safe_list([primary] + secondary)
     return secondary
+
+
+def _korean_intent_labels(labels: List[str]) -> List[str]:
+    translated: List[str] = []
+    seen = set()
+    for label in labels:
+        cleaned = str(label or "").strip()
+        if not cleaned:
+            continue
+        display = INTENT_LABEL_KO.get(cleaned, cleaned)
+        if display not in seen:
+            translated.append(display)
+            seen.add(display)
+    return translated
+
+
+def _expert_guidance_for_stage(risk_stage: str) -> str:
+    if risk_stage == "위험":
+        return "즉시 109, 119, 112 또는 가까운 응급실에 연락하세요."
+    return "필요하면 가까운 사람이나 상담센터에 도움을 요청할 수 있어요."
 
 
 def _dataset_lines(summary: Dict[str, Any], result: Optional[Dict[str, Any]]) -> List[str]:
@@ -530,6 +565,9 @@ def build_service_report(
     summary = summary or {}
     diary_state = diary_state or {}
     result = last_agent_result or {}
+    if not summary and not diary_state and not result:
+        return wrap_card("마음정리 보고서", "- 아직 상담 기록이 없습니다.")
+
     agents = _agent_details(result)
     intent = _as_dict(agents.get("intent"))
     state = _as_dict(agents.get("emotional_state"))
@@ -549,7 +587,7 @@ def build_service_report(
     if isinstance(primary_intent, str) and primary_intent:
         concern_keywords.append(primary_intent)
     concern_keywords.extend(intent_labels)
-    concern_keywords = _safe_list(concern_keywords, max_items=4)
+    concern_keywords = _korean_intent_labels(_safe_list(concern_keywords, max_items=8))[:4]
 
     diary_lines = []
     if diary_state:
@@ -568,7 +606,7 @@ def build_service_report(
         f"- 위험 단계: {escape_text(risk_stage)}",
         f"- 추천 안정화 활동: {escape_text(action_text) if action_text and len(action_text) <= 120 else '상담 채팅 후 표시됩니다.'}",
         f"- 다음 follow-up 질문: {escape_text(followup_question) if followup_question and len(followup_question) <= 120 else '상담 채팅 후 표시됩니다.'}",
-        f"- 전문가 상담 안내: {'긴급 연락 또는 상담센터 연결을 우선 권장합니다.' if risk_stage in {'주의', '위험'} else '필요하면 상담센터 이용을 함께 검토할 수 있습니다.'}",
+        f"- 전문가 상담 안내: {_expert_guidance_for_stage(str(risk_stage))}",
     ]
 
     sections = [wrap_card("마음정리 보고서", "\n".join(report_lines))]
@@ -773,6 +811,16 @@ def normalize_chat_history(chat_history: Optional[List[Any]]) -> List[ChatMessag
     return normalized
 
 
+def toggle_nickname_input(anonymous_enabled: bool) -> Dict[str, Any]:
+    """Enable nickname only when anonymous mode is off."""
+    try:
+        import gradio as gr
+
+        return gr.update(interactive=not bool(anonymous_enabled), value="" if anonymous_enabled else None)
+    except Exception:
+        return {"interactive": not bool(anonymous_enabled)}
+
+
 def create_demo():
     """Create and return the Gradio demo interface."""
     try:
@@ -784,7 +832,8 @@ def create_demo():
     .chat-shell { max-width: 980px; margin: 18px auto; }
     .app-title { font-size:24px; font-weight:700; color:#202124; margin-bottom:2px; }
     .app-sub { font-size:13px; color:#5f6368; margin-bottom:14px; }
-    .chatbot { border-radius:12px; min-height:460px; }
+    .chatbot { border-radius:12px; height:520px; max-height:520px; overflow-y:auto; }
+    .next-steps { border-top:1px solid #e5e7eb; margin-top:10px; padding-top:10px; }
     .input-row textarea { border-radius:10px !important; }
     .cta { border-radius:10px; font-weight:700; }
     .status-line { min-height:28px; color:#4c6f8f; font-size:13px; }
@@ -799,19 +848,15 @@ def create_demo():
                 "<div class='app-title'>Psychologist AI Agent</div>"
                 "<div class='app-sub'>2030 청년을 위한 익명 정서 지원, 감정 체크, 안정화 활동 추천, 위험 신호 조기 발견 데모입니다.</div>"
             )
-            chat_state = gr.State([])
+            chat_state = gr.State(INITIAL_CHAT_HISTORY)
             diary_state = gr.State({})
             summary_output = gr.JSON({}, visible=False)
 
             with gr.Row():
-                anonymous_mode = gr.Checkbox(value=True, label="익명으로 시작하기")
-                save_consent = gr.Checkbox(value=False, label="기록 저장 동의")
-            gr.Markdown(
-                wrap_card(
-                    "AI 첫 인사",
-                    "안녕하세요. 이름을 말하지 않아도 괜찮아요. 지금 마음에 남아 있는 일을 한 문장부터 편하게 적어주세요.",
-                )
-            )
+                anonymous_mode = gr.Checkbox(value=True, label="익명으로 시작하기", interactive=True)
+                nickname = gr.Textbox(label="닉네임", placeholder="선택 입력", lines=1, interactive=False)
+                save_consent = gr.Checkbox(value=False, label="기록 저장 동의", interactive=True)
+            gr.Markdown("<div class='small-note'>익명 모드에서는 닉네임을 입력하지 않아도 상담을 시작할 수 있습니다.</div>")
 
             with gr.Tabs():
                 with gr.TabItem("상담 채팅"):
@@ -819,6 +864,7 @@ def create_demo():
                         label="상담 채팅",
                         elem_classes="chatbot",
                         height=460,
+                        value=INITIAL_CHAT_HISTORY,
                     )
                     status_output = gr.Markdown("", elem_classes="status-line")
 
@@ -843,7 +889,15 @@ def create_demo():
                         ex_anxiety.click(lambda: example_text("사람 만나는 게 부담스럽고 계속 불안해요."), outputs=message)
                         ex_risk.click(lambda: example_text("죽고 싶어요."), outputs=message)
 
-                    with gr.Accordion("상태 체크", open=False):
+                    gr.Markdown("<div class='small-note next-steps'>상담 후 필요하면 다음 단계로 이어갈 수 있어요.</div>")
+                    with gr.Row():
+                        checkin_shortcut = gr.Button("상태 체크하기", elem_classes="example-button")
+                        diary_shortcut = gr.Button("감정일기 쓰기", elem_classes="example-button")
+                        report_shortcut = gr.Button("마음정리 보고서 보기", elem_classes="example-button")
+                        expert_shortcut = gr.Button("전문가 상담 연결", elem_classes="example-button")
+                    shortcut_output = gr.Markdown("")
+
+                    with gr.Accordion("상태 체크하기", open=False):
                         gr.Markdown("선택 입력입니다. 잘 모르겠으면 보통으로 두어도 괜찮아요.")
                         with gr.Row():
                             mood_score = gr.Slider(1, 5, value=3, step=1, label="오늘 기분")
@@ -880,7 +934,7 @@ def create_demo():
                     report_output = gr.Markdown(build_service_report({}, {}))
 
                 with gr.TabItem("전문가 상담 연결"):
-                    gr.Markdown(
+                    expert_output = gr.Markdown(
                         wrap_card(
                             "전문가 상담 연결",
                             "\n".join(
@@ -902,6 +956,12 @@ def create_demo():
                 "<div class='small-note'>본 서비스는 전문 상담사나 의료진을 대체하지 않습니다. "
                 "위기 상황에서는 즉시 109, 119, 112 또는 가까운 사람에게 도움을 요청하세요.</div>"
             )
+
+        anonymous_mode.change(
+            toggle_nickname_input,
+            inputs=anonymous_mode,
+            outputs=nickname,
+        )
 
         submit.click(
             lambda: "응답을 준비하고 있어요...",
@@ -946,6 +1006,40 @@ def create_demo():
             build_service_report,
             inputs=[summary_output, diary_state],
             outputs=report_output,
+        )
+
+        checkin_shortcut.click(
+            lambda: "상태 체크하기 영역에서 기분, 불안, 외로움, 수면 상태를 선택해 상담에 반영할 수 있어요.",
+            outputs=shortcut_output,
+        )
+        diary_shortcut.click(
+            lambda: "감정일기 탭에서 오늘의 감정과 점수를 기록할 수 있어요.",
+            outputs=shortcut_output,
+        )
+        report_shortcut.click(
+            build_service_report,
+            inputs=[summary_output, diary_state],
+            outputs=report_output,
+        ).then(
+            lambda: "마음정리 보고서 탭에서 최근 상담 요약을 확인할 수 있어요.",
+            outputs=shortcut_output,
+        )
+        expert_shortcut.click(
+            lambda: wrap_card(
+                "전문가 상담 연결",
+                "\n".join(
+                    [
+                        "- 위기 상황: 109, 119, 112에 즉시 연락하세요.",
+                        "- 관심/주의 단계에서도 필요하면 가까운 사람이나 상담센터에 도움을 요청할 수 있어요.",
+                        "- 이 AI는 의료 진단이나 치료를 하지 않으며 전문 상담사를 대체하지 않습니다.",
+                    ]
+                ),
+                crisis=True,
+            ),
+            outputs=expert_output,
+        ).then(
+            lambda: "전문가 상담 연결 탭에서 연락처 안내를 확인할 수 있어요.",
+            outputs=shortcut_output,
         )
 
     return demo

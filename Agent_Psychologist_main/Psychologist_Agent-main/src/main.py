@@ -286,8 +286,12 @@ class PsychologistAgent:
             dataset_start = time.perf_counter()
             intent_result = classify_intent(user_input)
 
-            counseling_recommendation = self.counseling_retriever.recommend(user_input)
-            empathy_recommendation = self.empathy_retriever.recommend(user_input)
+            if self.mock_mode:
+                counseling_recommendation = self._lightweight_counseling_recommendation(user_input)
+                empathy_recommendation = self._lightweight_empathy_recommendation(user_input)
+            else:
+                counseling_recommendation = self.counseling_retriever.recommend(user_input)
+                empathy_recommendation = self.empathy_retriever.recommend(user_input)
             result["counseling_hint"] = counseling_recommendation.intervention_hint
             result["empathy_style_hint"] = empathy_recommendation.empathy_style_hint
 
@@ -694,6 +698,70 @@ class PsychologistAgent:
         timing.setdefault("agent_pipeline", 0.0)
         timing.setdefault("response_generation", 0.0)
         timing["total"] = self._elapsed_ms(total_start)
+
+    def _lightweight_counseling_recommendation(self, user_input: str) -> CounselingRecommendation:
+        text = user_input or ""
+        if any(keyword in text for keyword in ("잠", "수면", "불면")):
+            return CounselingRecommendation(
+                intervention_hint="수면 부담을 낮추는 작은 행동을 하나만 제안하세요.",
+                matched_record_id="mock-sleep",
+                category="sleep",
+                score=1.0,
+            )
+        if any(keyword in text for keyword in ("불안", "걱정", "초조")):
+            return CounselingRecommendation(
+                intervention_hint="불안을 낮추는 안정화 행동을 하나만 제안하세요.",
+                matched_record_id="mock-anxiety",
+                category="anxiety",
+                score=1.0,
+            )
+        if any(keyword in text for keyword in ("외로", "혼자", "고립")):
+            return CounselingRecommendation(
+                intervention_hint="고립감을 줄이는 부담 낮은 연결 행동을 제안하세요.",
+                matched_record_id="mock-loneliness",
+                category="loneliness",
+                score=1.0,
+            )
+        return CounselingRecommendation(
+            intervention_hint="감정을 확인하고 오늘 가능한 작은 실행 단계를 하나만 제안하세요.",
+            matched_record_id="mock-general",
+            category="general",
+            score=0.5,
+        )
+
+    def _lightweight_empathy_recommendation(self, user_input: str) -> EmpathyRecommendation:
+        text = user_input or ""
+        if any(keyword in text for keyword in ("불안", "걱정", "초조")):
+            return EmpathyRecommendation(
+                empathy_style_hint="불안이 이어지는 부담을 먼저 확인하고 차분하게 공감하세요.",
+                emotion_label="불안",
+                empathy_label="위로",
+                matched_record_id="mock-anxiety",
+                score=1.0,
+            )
+        if any(keyword in text for keyword in ("외로", "혼자", "고립")):
+            return EmpathyRecommendation(
+                empathy_style_hint="혼자 버티는 느낌을 먼저 알아주고 연결감을 회복하도록 돕습니다.",
+                emotion_label="슬픔",
+                empathy_label="위로",
+                matched_record_id="mock-loneliness",
+                score=1.0,
+            )
+        if any(keyword in text for keyword in ("무기력", "기운", "소진", "지쳤")):
+            return EmpathyRecommendation(
+                empathy_style_hint="무기력과 소진감을 먼저 인정하고 부담을 낮춰 공감하세요.",
+                emotion_label="슬픔",
+                empathy_label="위로",
+                matched_record_id="mock-low-mood",
+                score=1.0,
+            )
+        return EmpathyRecommendation(
+            empathy_style_hint="감정을 먼저 확인하고, 차분하게 공감한 뒤 다음 한 걸음을 제안하세요.",
+            emotion_label="",
+            empathy_label="위로",
+            matched_record_id="mock-general",
+            score=0.5,
+        )
 
     def _risk_stage_from_level(self, risk_level: str) -> str:
         """Convert technical risk levels into the Korean-facing stage labels."""
@@ -1169,10 +1237,61 @@ class PsychologistAgent:
             return None
 
         try:
+            if self.mock_mode:
+                return self._lightweight_wellness_recommendation(wellness_checkin)
             return self.wellness_recommender.recommend(wellness_checkin)
         except Exception as exc:
             logger.warning("Wellness recommender failed: %s", exc)
             return None
+
+    def _lightweight_wellness_recommendation(
+        self,
+        wellness_checkin: Dict[str, Any],
+    ) -> WellnessRecommendation:
+        sleep = int(wellness_checkin.get("sleep_quality", 3) or 3)
+        anxiety = int(wellness_checkin.get("anxiety_score", 3) or 3)
+        loneliness = int(wellness_checkin.get("loneliness_score", 3) or 3)
+        stress = int(wellness_checkin.get("stress_score", 3) or 3)
+
+        if sleep <= 2:
+            return WellnessRecommendation(
+                support_hint="잠들기 전 화면 밝기를 낮추고, 발바닥 감각을 30초만 느껴보세요.",
+                risk_stage="주의",
+                matched_record_id="mock-wellness-sleep",
+                matched_topic="sleep",
+                distance=0.0,
+            )
+        if anxiety >= 4:
+            return WellnessRecommendation(
+                support_hint="숨을 천천히 내쉬며 지금 보이는 물건 세 가지를 확인해보세요.",
+                risk_stage="주의",
+                matched_record_id="mock-wellness-anxiety",
+                matched_topic="anxiety",
+                distance=0.0,
+            )
+        if loneliness >= 4:
+            return WellnessRecommendation(
+                support_hint="부담이 낮은 사람 한 명에게 짧은 안부 메시지를 보내보세요.",
+                risk_stage="주의",
+                matched_record_id="mock-wellness-loneliness",
+                matched_topic="loneliness",
+                distance=0.0,
+            )
+        if stress >= 4:
+            return WellnessRecommendation(
+                support_hint="오늘 해야 할 일을 한 줄로만 적고 하나만 고르세요.",
+                risk_stage="주의",
+                matched_record_id="mock-wellness-stress",
+                matched_topic="stress",
+                distance=0.0,
+            )
+        return WellnessRecommendation(
+            support_hint="지금은 숨을 고르고, 오늘 할 수 있는 가장 작은 한 가지를 선택해 보세요.",
+            risk_stage="관심",
+            matched_record_id="mock-wellness-general",
+            matched_topic="general",
+            distance=0.0,
+        )
 
     def _merge_wellness_hint(self, response_text: str, support_hint: str) -> str:
         return response_text
