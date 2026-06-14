@@ -14,9 +14,11 @@ from src.agent.decision import decide_action
 from src.agent.followup import generate_followup_question
 from src.agent.intent import classify_intent
 from src.agent.models import DecisionAction, EmotionLabel, EmotionalStateVector
+from src.agent.models import IntentCandidate, IntentLabel, IntentSeverity, SmallActionPlan
 from src.agent.planner import generate_small_action_plan
 from src.agent.recall import build_proactive_recall
 from src.agent.state import summarize_emotional_state, update_emotional_state
+from src.agent.summary import build_session_dream_summary
 from src.safety.gateway import SafetyGateway, SafetyResult
 from src.safety.patterns import RiskLevel
 from src.privacy.pii_redactor import PIIRedactor, RedactionResult
@@ -175,6 +177,10 @@ class PsychologistAgent:
         decision_result = None
         followup_question = ""
         small_action_plan = None
+        continuity_memory = None
+        previous_emotional_state = None
+        previous_small_action = None
+        previous_followup = ""
 
         try:
             # Step 1: Safety Gateway Check
@@ -248,10 +254,6 @@ class PsychologistAgent:
 
             result["pipeline_details"].setdefault("agents", {})
             intent_result = classify_intent(user_input)
-            result["pipeline_details"]["agents"]["intent"] = self._serialize_intent_agent(
-                intent_result
-            )
-            self._sync_final_safety_agent(result)
 
             counseling_recommendation = self.counseling_retriever.recommend(user_input)
             empathy_recommendation = self.empathy_retriever.recommend(user_input)
@@ -292,8 +294,25 @@ class PsychologistAgent:
                     "error": type(exc).__name__,
                 }
 
+            continuity_memory = await self._get_continuity_memory(session_id)
+            previous_emotional_state = self._previous_state_from_continuity(continuity_memory)
+            previous_small_action = self._small_action_from_continuity(
+                continuity_memory,
+                session_id=session_id,
+            )
+            previous_followup = getattr(continuity_memory, "next_follow_up", "") if continuity_memory else ""
+            intent_result = self._apply_followup_continuity(
+                intent_result=intent_result,
+                previous_followup=previous_followup,
+                user_input=user_input,
+            )
+            result["pipeline_details"]["agents"]["intent"] = self._serialize_intent_agent(
+                intent_result
+            )
+            self._sync_final_safety_agent(result)
+
             emotional_state = update_emotional_state(
-                previous_state=None,
+                previous_state=previous_emotional_state,
                 intent_result=intent_result,
                 emotion_labels=self._emotion_labels_from_empathy(empathy_recommendation),
                 risk_stage=result["risk_stage"],
@@ -303,9 +322,16 @@ class PsychologistAgent:
                 self._serialize_emotional_state_agent(emotional_state)
             )
 
-            proactive_recall = build_proactive_recall(memory_context=memory_context)
+            proactive_recall = build_proactive_recall(
+                memory_context=memory_context,
+                last_small_action=previous_small_action,
+                next_followup=previous_followup,
+            )
             result["pipeline_details"]["agents"]["memory_recall"] = (
-                self._serialize_memory_recall_agent(proactive_recall)
+                self._serialize_memory_recall_agent(
+                    proactive_recall,
+                    continuity_memory=continuity_memory,
+                )
             )
 
             decision_result = decide_action(
@@ -344,6 +370,11 @@ class PsychologistAgent:
             should_plan_small_action = (
                 DecisionAction.SUGGEST_SMALL_ACTION in decision_result.secondary_actions
                 or bool(result["wellness_hint"])
+                or (
+                    intent_result
+                    and intent_result.primary_intent
+                    in {IntentLabel.SLEEP_PROBLEM, IntentLabel.ANXIETY_SUPPORT}
+                )
             )
             if (
                 should_plan_small_action
@@ -387,6 +418,17 @@ class PsychologistAgent:
 
                 await self.session_manager.add_to_history(
                     session_id, user_input, result["response"]
+                )
+                await self._store_structured_continuity(
+                    session_id=session_id,
+                    intent_result=intent_result,
+                    emotional_state=emotional_state,
+                    risk_stage=result["risk_stage"],
+                    small_action_plan=small_action_plan,
+                    followup_question=followup_question,
+                    memory_context=memory_context,
+                    previous_continuity=continuity_memory,
+                    result=result,
                 )
 
                 return result
@@ -562,6 +604,17 @@ class PsychologistAgent:
             await self.session_manager.add_to_history(
                 session_id, user_input, generation_result.text
             )
+            await self._store_structured_continuity(
+                session_id=session_id,
+                intent_result=intent_result,
+                emotional_state=emotional_state,
+                risk_stage=result["risk_stage"],
+                small_action_plan=small_action_plan,
+                followup_question=followup_question,
+                memory_context=memory_context,
+                previous_continuity=continuity_memory,
+                result=result,
+            )
 
             return result
 
@@ -675,14 +728,172 @@ class PsychologistAgent:
         data["state_summary"] = summarize_emotional_state(emotional_state)
         return data
 
-    def _serialize_memory_recall_agent(self, proactive_recall: Any) -> Dict[str, Any]:
+    async def _get_continuity_memory(self, session_id: str) -> Any:
+        getter = getattr(self.memory_store, "get_conversation_continuity", None)
+        if not callable(getter):
+            return None
+        try:
+            return await getter(session_id)
+        except Exception as exc:
+            logger.warning("Conversation continuity unavailable: %s", exc)
+            return None
+
+    def _previous_state_from_continuity(self, continuity_memory: Any) -> Optional[EmotionalStateVector]:
+        values = getattr(continuity_memory, "emotional_state_vector", None)
+        if not isinstance(values, dict) or not values:
+            return None
+        try:
+            return EmotionalStateVector(**{
+                key: float(values[key])
+                for key in ("mood", "anxiety", "stress", "sleep", "energy", "safety", "rapport")
+                if key in values
+            })
+        except (TypeError, ValueError):
+            return None
+
+    def _small_action_from_continuity(
+        self,
+        continuity_memory: Any,
+        session_id: str,
+    ) -> Optional[SmallActionPlan]:
+        action = getattr(continuity_memory, "last_small_action", None)
+        action_text = getattr(action, "action_text", "") if action else ""
+        if not isinstance(action_text, str) or not action_text.strip():
+            return None
+        return SmallActionPlan(
+            action_id=str(getattr(action, "action_id", "")),
+            title="Small action",
+            session_id=session_id,
+            intent_label=str(getattr(action, "intent_label", "")),
+            action_text=action_text.strip(),
+            rationale_label="memory_recall",
+            status=str(getattr(action, "status", "suggested")),
+            created_at=str(getattr(action, "created_at", "")),
+            steps=[action_text.strip()],
+        )
+
+    def _apply_followup_continuity(
+        self,
+        intent_result: Any,
+        previous_followup: str,
+        user_input: str,
+    ) -> Any:
+        followup = (previous_followup or "").strip()
+        if not followup:
+            return intent_result
+
+        sleep_followup = any(marker in followup for marker in ("잠", "수면", "잠드는", "자다가", "깨"))
+        short_answer = len((user_input or "").strip()) <= 40
+        current = getattr(intent_result, "primary_intent", None)
+        if not (
+            sleep_followup
+            and short_answer
+            and current in {IntentLabel.OTHER_CONCERN, IntentLabel.SUPPORT_REQUEST, IntentLabel.NEED_EMPATHY}
+        ):
+            return intent_result
+
+        existing = [
+            candidate.label
+            for candidate in getattr(intent_result, "candidates", []) or []
+        ]
+        if IntentLabel.SLEEP_PROBLEM not in existing:
+            intent_result.candidates.insert(
+                0,
+                IntentCandidate(
+                    label=IntentLabel.SLEEP_PROBLEM,
+                    severity=IntentSeverity.S1_CONCERN,
+                    confidence=0.75,
+                    rationale_tags=["previous_followup_sleep_context"],
+                    evidence=["previous_followup_sleep_context"],
+                ),
+            )
+        intent_result.primary_intent = IntentLabel.SLEEP_PROBLEM
+        intent_result.needs_follow_up = True
+        intent_result.chat_label_hint["question"] = True
+        return intent_result
+
+    def _should_build_session_summary(self, previous_continuity: Any) -> bool:
+        turn_count = int(getattr(previous_continuity, "turn_count", 0) or 0) + 1
+        return turn_count > 0 and turn_count % 5 == 0
+
+    async def _store_structured_continuity(
+        self,
+        session_id: str,
+        intent_result: Any,
+        emotional_state: EmotionalStateVector,
+        risk_stage: str,
+        small_action_plan: Any,
+        followup_question: str,
+        memory_context: Any,
+        previous_continuity: Any,
+        result: Dict[str, Any],
+    ) -> None:
+        updater = getattr(self.memory_store, "update_conversation_continuity", None)
+        if not callable(updater):
+            return
+
+        latest_summary = None
+        if self._should_build_session_summary(previous_continuity):
+            latest_summary = build_session_dream_summary(
+                session_id=session_id,
+                memory_context=memory_context,
+                intent_results=[intent_result] if intent_result else [],
+                risk_stages=[
+                    getattr(previous_continuity, "risk_stage_start", risk_stage) if previous_continuity else risk_stage,
+                    risk_stage,
+                ],
+                last_small_action=small_action_plan,
+                next_followup=followup_question,
+            )
+            result.setdefault("pipeline_details", {}).setdefault("agents", {})[
+                "session_summary"
+            ] = {
+                "created": True,
+                "summary_id": latest_summary.summary_id,
+                "main_issue": latest_summary.main_issue,
+                "emotional_trend": latest_summary.emotional_trend,
+                "risk_stage_start": latest_summary.risk_stage_start,
+                "risk_stage_end": latest_summary.risk_stage_end,
+                "has_last_small_action": bool(latest_summary.last_small_action),
+                "has_next_follow_up": bool(latest_summary.next_follow_up),
+            }
+
+        await updater(
+            session_id=session_id,
+            last_small_action=small_action_plan,
+            next_follow_up=followup_question,
+            emotional_state_vector=emotional_state.to_dict(),
+            risk_stage=risk_stage,
+            intent_label=getattr(getattr(intent_result, "primary_intent", ""), "value", ""),
+            latest_structured_summary=latest_summary,
+        )
+
+    def _serialize_memory_recall_agent(
+        self,
+        proactive_recall: Any,
+        continuity_memory: Any = None,
+    ) -> Dict[str, Any]:
+        recalled_keys = list(getattr(proactive_recall, "recalled_keys", []) or [])
+        if continuity_memory is not None:
+            if getattr(continuity_memory, "emotional_state_vector", None):
+                if "previous_emotional_state" not in recalled_keys:
+                    recalled_keys.append("previous_emotional_state")
+            if getattr(continuity_memory, "latest_structured_summary", None):
+                if "session_summary" not in recalled_keys:
+                    recalled_keys.append("session_summary")
         return {
-            "recalled_keys": list(getattr(proactive_recall, "recalled_keys", []) or []),
+            "recalled_keys": recalled_keys,
             "repeated_concerns": list(getattr(proactive_recall, "repeated_concerns", []) or []),
             "preferred_response_style": list(getattr(proactive_recall, "preferred_response_style", []) or []),
             "avoid_topics": list(getattr(proactive_recall, "avoid_topics", []) or []),
             "has_last_small_action": bool(getattr(proactive_recall, "last_small_action", "")),
             "has_next_follow_up": bool(getattr(proactive_recall, "next_follow_up", "")),
+            "has_previous_emotional_state": bool(
+                getattr(continuity_memory, "emotional_state_vector", None)
+            ),
+            "has_session_summary": bool(
+                getattr(continuity_memory, "latest_structured_summary", None)
+            ),
             "stale": bool(getattr(proactive_recall, "stale", False)),
         }
 
@@ -883,6 +1094,12 @@ class PsychologistAgent:
         emotional_state = emotional_state or EmotionalStateVector()
         allow_low_mood = self._is_low_mood_context(intent_result, emotional_state)
         sleep_or_anxiety = self._is_sleep_or_anxiety_context(intent_result, emotional_state)
+        intent_labels = set(self._intent_labels(intent_result))
+        primary_intent = self._enum_name(getattr(intent_result, "primary_intent", ""))
+        empathy_only = primary_intent == "NEED_EMPATHY" and not intent_labels.intersection(
+            {"SLEEP_PROBLEM", "ANXIETY_SUPPORT", "LOW_MOOD_SUPPORT"}
+        )
+        advice_requested = "NEED_ADVICE" in intent_labels and not empathy_only
 
         segments = [
             "지금 느끼는 부담이 꽤 컸을 것 같아요.",
@@ -896,8 +1113,13 @@ class PsychologistAgent:
             ]
         elif allow_low_mood:
             segments = [
-                "기분이 가라앉은 상태로 하루를 버티는 일이 꽤 무겁게 느껴졌을 것 같아요.",
-                "지금의 반응은 약해서가 아니라, 에너지가 많이 소진됐다는 신호일 수 있습니다.",
+                "무기력하거나 기운이 없는 상태로 하루를 버티는 일이 꽤 무겁게 느껴졌을 것 같아요.",
+                "지금의 반응은 약해서가 아니라, 마음과 에너지가 많이 소진됐다는 신호일 수 있습니다.",
+            ]
+        elif empathy_only:
+            segments = [
+                "지금은 해결책을 서둘러 찾기보다, 그 마음이 얼마나 버거웠는지 먼저 알아주는 게 필요해 보여요.",
+                "여기서는 판단하거나 몰아붙이지 않고, 지금 느끼는 감정을 차분히 함께 확인해볼게요.",
             ]
         elif empathy_style_hint:
             segments[1] = (
@@ -912,7 +1134,11 @@ class PsychologistAgent:
                 action_step = safe_hint
                 break
 
-        if not action_step:
+        if empathy_only:
+            action_step = "지금 감정을 고치려 하지 말고, 가장 가까운 감정 단어 하나만 천천히 떠올려보세요."
+        elif advice_requested:
+            action_step = "문제를 한 번에 해결하려 하지 말고, 지금 바로 할 수 있는 작은 실행 단계 하나만 정해보세요."
+        elif not action_step:
             action_step = "지금 당장 해결하려 하기보다, 오늘 할 수 있는 가장 작은 한 가지를 정해보세요."
 
         segments.append(action_step)
