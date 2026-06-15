@@ -11,7 +11,7 @@ from scripts.data_preparation import DataPreparation
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-SAMPLE_RAW_FILE = ROOT_DIR / "data" / "raw" / "wellness_sample.jsonl"
+SAMPLE_RAW_FILE = ROOT_DIR / "tests" / "fixtures" / "wellness_sample.jsonl"
 
 
 class TestWellnessDatasetFormat:

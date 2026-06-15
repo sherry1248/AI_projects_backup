@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List, AsyncIterator
 from dataclasses import dataclass
 
 from src.agent.decision import decide_action
+from src.agent.cause import CauseExplorationResult, explore_causes
 from src.agent.followup import generate_followup_question
 from src.agent.intent import classify_intent
 from src.agent.models import DecisionAction, EmotionLabel, EmotionalStateVector
@@ -99,6 +100,10 @@ class PsychologistAgent:
         self.mock_mode = mock_mode
         if self.mock_mode is None:
             self.mock_mode = os.getenv("LLM_TYPE", "MOCK").upper() == "MOCK"
+        self._use_full_mock_retrievers = (
+            os.getenv("MOCK_USE_DATASET_RETRIEVERS", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
         # Initialize components
         # Safety and RAG always use real embeddings (BGE-small, CPU)
@@ -198,6 +203,7 @@ class PsychologistAgent:
         decision_result = None
         followup_question = ""
         small_action_plan = None
+        cause_exploration = CauseExplorationResult()
         continuity_memory = None
         previous_emotional_state = None
         previous_small_action = None
@@ -287,8 +293,8 @@ class PsychologistAgent:
             intent_result = classify_intent(user_input)
 
             if self.mock_mode:
-                counseling_recommendation = self._lightweight_counseling_recommendation(user_input)
-                empathy_recommendation = self._lightweight_empathy_recommendation(user_input)
+                counseling_recommendation = self._mock_counseling_recommendation(user_input)
+                empathy_recommendation = self._mock_empathy_recommendation(user_input)
             else:
                 counseling_recommendation = self.counseling_retriever.recommend(user_input)
                 empathy_recommendation = self.empathy_retriever.recommend(user_input)
@@ -311,27 +317,11 @@ class PsychologistAgent:
             timing["dataset_retrieval"] = self._elapsed_ms(dataset_start)
 
             memory_start = time.perf_counter()
-            try:
-                memory_context = await self.memory_store.get_memory_context(session_id)
-                result["pipeline_details"]["memory_context"] = {
-                    "available": True,
-                    "recent_summaries": len(memory_context.recent_summaries),
-                    "facts": len(memory_context.facts),
-                    "directives": len([
-                        directive for directive in memory_context.directives
-                        if getattr(directive, "active", True)
-                    ]),
-                    "emotional_trend": len(memory_context.emotional_trend),
-                }
-            except Exception as exc:
-                logger.warning("Memory context unavailable: %s", exc)
-                memory_context = None
-                result["pipeline_details"]["memory_context"] = {
-                    "available": False,
-                    "error": type(exc).__name__,
-                }
-
-            continuity_memory = await self._get_continuity_memory(session_id)
+            (memory_context, memory_details), continuity_memory = await asyncio.gather(
+                self._get_memory_context_with_details(session_id),
+                self._get_continuity_memory(session_id),
+            )
+            result["pipeline_details"]["memory_context"] = memory_details
             previous_emotional_state = self._previous_state_from_continuity(continuity_memory)
             previous_small_action = self._small_action_from_continuity(
                 continuity_memory,
@@ -389,17 +379,40 @@ class PsychologistAgent:
                 self._serialize_decision_agent(decision_result)
             )
 
+            cause_exploration = explore_causes(
+                user_input=user_input,
+                intent_result=intent_result,
+                counseling_recommendation=counseling_recommendation,
+                empathy_recommendation=empathy_recommendation,
+                wellness_recommendation=wellness_recommendation,
+                proactive_recall=proactive_recall,
+                previous_followup=previous_followup,
+            )
+            result["pipeline_details"]["agents"]["cause_exploration"] = (
+                cause_exploration.to_pipeline_dict()
+            )
+
             if (
                 decision_result.primary_action == DecisionAction.ASK_FOLLOW_UP
                 or decision_result.response_constraints.get("must_include_followup") is True
+                or bool(cause_exploration.exploration_question)
             ):
-                followup_question = generate_followup_question(
-                    intent_result=intent_result,
-                    decision_result=decision_result,
-                    emotional_state=emotional_state,
-                    risk_stage=result["risk_stage"],
-                    avoid_topics=decision_result.response_constraints.get("avoid_topics", []),
-                )
+                exploration_question = (cause_exploration.exploration_question or "").strip()
+                previous_followup_text = (previous_followup or "").strip()
+                if exploration_question and exploration_question != previous_followup_text:
+                    followup_question = exploration_question
+                else:
+                    followup_question = generate_followup_question(
+                        intent_result=intent_result,
+                        decision_result=decision_result,
+                        emotional_state=emotional_state,
+                        risk_stage=result["risk_stage"],
+                        previous_followup=previous_followup,
+                        avoid_topics=decision_result.response_constraints.get("avoid_topics", []),
+                        prefer_previous=False,
+                    )
+                    if followup_question.strip() == previous_followup_text:
+                        followup_question = ""
 
             result["pipeline_details"]["agents"]["followup"] = {
                 "has_question": bool(followup_question),
@@ -454,6 +467,7 @@ class PsychologistAgent:
                     emotional_state=emotional_state,
                     followup_question=followup_question,
                     small_action_text=small_action_plan.action_text if small_action_plan else "",
+                    cause_exploration=cause_exploration,
                 )
                 result["response"] = self._add_safety_notice(
                     self.sanitize_user_response(response_text)
@@ -480,12 +494,6 @@ class PsychologistAgent:
                 return result
 
             timing["response_generation"] = self._elapsed_ms(response_start)
-            wellness_recommendation = self._get_wellness_recommendation(wellness_checkin)
-            if wellness_recommendation:
-                result["pipeline_details"]["wellness"] = self._safe_wellness_details(
-                    wellness_recommendation
-                )
-
             # Step 2: PII Redaction
             non_mock_response_start = time.perf_counter()
             if self.config.enable_pii_redaction:
@@ -729,6 +737,21 @@ class PsychologistAgent:
             score=0.5,
         )
 
+    def _mock_counseling_recommendation(self, user_input: str) -> CounselingRecommendation:
+        if (
+            not self._use_full_mock_retrievers
+            and isinstance(self.counseling_retriever, CounselingRetriever)
+        ):
+            return self._lightweight_counseling_recommendation(user_input)
+
+        try:
+            recommendation = self.counseling_retriever.recommend(user_input)
+            if getattr(recommendation, "matched_record_id", ""):
+                return recommendation
+        except Exception as exc:
+            logger.warning("Mock counseling dataset recommendation failed: %s", exc)
+        return self._lightweight_counseling_recommendation(user_input)
+
     def _lightweight_empathy_recommendation(self, user_input: str) -> EmpathyRecommendation:
         text = user_input or ""
         if any(keyword in text for keyword in ("불안", "걱정", "초조")):
@@ -762,6 +785,21 @@ class PsychologistAgent:
             matched_record_id="mock-general",
             score=0.5,
         )
+
+    def _mock_empathy_recommendation(self, user_input: str) -> EmpathyRecommendation:
+        if (
+            not self._use_full_mock_retrievers
+            and isinstance(self.empathy_retriever, EmpathyRetriever)
+        ):
+            return self._lightweight_empathy_recommendation(user_input)
+
+        try:
+            recommendation = self.empathy_retriever.recommend(user_input)
+            if getattr(recommendation, "matched_record_id", ""):
+                return recommendation
+        except Exception as exc:
+            logger.warning("Mock empathy dataset recommendation failed: %s", exc)
+        return self._lightweight_empathy_recommendation(user_input)
 
     def _risk_stage_from_level(self, risk_level: str) -> str:
         """Convert technical risk levels into the Korean-facing stage labels."""
@@ -858,6 +896,26 @@ class PsychologistAgent:
         data["state_summary"] = summarize_emotional_state(emotional_state)
         return data
 
+    async def _get_memory_context_with_details(self, session_id: str) -> tuple[Any, Dict[str, Any]]:
+        try:
+            memory_context = await self.memory_store.get_memory_context(session_id)
+            return memory_context, {
+                "available": True,
+                "recent_summaries": len(memory_context.recent_summaries),
+                "facts": len(memory_context.facts),
+                "directives": len([
+                    directive for directive in memory_context.directives
+                    if getattr(directive, "active", True)
+                ]),
+                "emotional_trend": len(memory_context.emotional_trend),
+            }
+        except Exception as exc:
+            logger.warning("Memory context unavailable: %s", exc)
+            return None, {
+                "available": False,
+                "error": type(exc).__name__,
+            }
+
     async def _get_continuity_memory(self, session_id: str) -> Any:
         getter = getattr(self.memory_store, "get_conversation_continuity", None)
         if not callable(getter):
@@ -914,11 +972,18 @@ class PsychologistAgent:
 
         sleep_followup = any(marker in followup for marker in ("잠", "수면", "잠드는", "자다가", "깨"))
         short_answer = len((user_input or "").strip()) <= 40
+        sleep_context_answer = any(
+            marker in (user_input or "")
+            for marker in ("잠", "수면", "숙면", "잠들", "깨")
+        )
         current = getattr(intent_result, "primary_intent", None)
         if not (
             sleep_followup
             and short_answer
-            and current in {IntentLabel.OTHER_CONCERN, IntentLabel.SUPPORT_REQUEST, IntentLabel.NEED_EMPATHY}
+            and (
+                current in {IntentLabel.OTHER_CONCERN, IntentLabel.SUPPORT_REQUEST, IntentLabel.NEED_EMPATHY}
+                or (sleep_context_answer and current == IntentLabel.ANXIETY_SUPPORT)
+            )
         ):
             return intent_result
 
@@ -1238,6 +1303,14 @@ class PsychologistAgent:
 
         try:
             if self.mock_mode:
+                if (
+                    not self._use_full_mock_retrievers
+                    and isinstance(self.wellness_recommender, WellnessRecommender)
+                ):
+                    return self._lightweight_wellness_recommendation(wellness_checkin)
+                recommendation = self.wellness_recommender.recommend(wellness_checkin)
+                if recommendation:
+                    return recommendation
                 return self._lightweight_wellness_recommendation(wellness_checkin)
             return self.wellness_recommender.recommend(wellness_checkin)
         except Exception as exc:
@@ -1305,12 +1378,13 @@ class PsychologistAgent:
         emotional_state: Optional[EmotionalStateVector] = None,
         followup_question: str = "",
         small_action_text: str = "",
+        cause_exploration: Optional[CauseExplorationResult] = None,
     ) -> str:
         emotional_state = emotional_state or EmotionalStateVector()
         allow_low_mood = self._is_low_mood_context(intent_result, emotional_state)
-        sleep_or_anxiety = self._is_sleep_or_anxiety_context(intent_result, emotional_state)
         intent_labels = set(self._intent_labels(intent_result))
         primary_intent = self._enum_name(getattr(intent_result, "primary_intent", ""))
+        selected_cause = getattr(cause_exploration, "selected_cause", "") or ""
         empathy_only = primary_intent == "NEED_EMPATHY" and not intent_labels.intersection(
             {"SLEEP_PROBLEM", "ANXIETY_SUPPORT", "LOW_MOOD_SUPPORT"}
         )
@@ -1321,15 +1395,40 @@ class PsychologistAgent:
             "이런 상태에서는 마음이 복잡해지고, 무엇부터 해야 할지 막막하게 느껴질 수 있습니다.",
         ]
 
-        if sleep_or_anxiety:
+        if selected_cause == "sleep_maintenance":
+            segments = [
+                "중간에 자주 깨는 쪽이면 자꾸 깨는 밤이 반복되고, 잠을 자도 몸이 충분히 쉬지 못한 느낌이 남을 수 있어요.",
+                "원인을 단정하기보다, 깨고 난 뒤 다시 잠들기 어려운지부터 같이 확인해보면 좋겠습니다.",
+            ]
+        elif selected_cause == "worry_or_anxiety":
+            segments = [
+                "잠자리에서 걱정이 커지거나 불안이 이어지면, 쉬어야 할 시간에도 머릿속이 계속 켜져 있는 것처럼 느껴질 수 있어요.",
+                "원인을 단정하기보다, 어떤 생각이 밤에 더 크게 올라오는지부터 같이 작게 확인해보면 좋겠습니다.",
+            ]
+        elif primary_intent == "SLEEP_PROBLEM":
             segments = [
                 "잠이 잘 오지 않고 불안까지 겹치면 몸과 마음이 계속 긴장한 채로 버티는 느낌이 들 수 있어요.",
-                "지금은 한 번에 해결하려 하기보다, 수면 리듬과 불안을 조금 낮추는 쪽부터 같이 살펴보면 좋겠습니다.",
+                "원인을 단정하기보다, 머릿속 걱정이나 생활 리듬, 몸의 피로가 함께 영향을 줄 가능성을 같이 조금씩 좁혀보면 좋겠습니다.",
+            ]
+        elif primary_intent == "ANXIETY_SUPPORT":
+            segments = [
+                "불안이 계속 올라오면 몸도 마음도 쉬지 못하고 긴장한 채로 버티는 느낌이 들 수 있어요.",
+                "원인을 단정하기보다, 해야 할 일의 압박이나 관계 긴장, 앞으로의 불확실성이 함께 영향을 주는지 같이 좁혀보면 좋겠습니다.",
             ]
         elif allow_low_mood:
             segments = [
                 "무기력하거나 기운이 없는 상태로 하루를 버티는 일이 꽤 무겁게 느껴졌을 것 같아요.",
-                "지금의 반응은 약해서가 아니라, 마음과 에너지가 많이 소진됐다는 신호일 수 있습니다.",
+                "원인을 단정할 수는 없지만, 소진감이나 고립감, 스스로를 낮게 보는 생각이 겹쳤는지 같이 살펴볼 수 있습니다.",
+            ]
+        elif primary_intent in {"STRESS_SUPPORT", "WORK_OR_STUDY_STRESS"}:
+            segments = [
+                "부담이 계속 쌓이면 몸과 마음이 계속 긴장한 상태로 버티게 될 수 있어요.",
+                "원인을 단정하기보다, 일이 많은지, 시작점이 막막한지, 끝내야 한다는 압박이 큰지 같이 좁혀보면 좋겠습니다.",
+            ]
+        elif primary_intent == "RELATIONSHIP_STRESS":
+            segments = [
+                "관계에서 생긴 긴장은 혼자 정리하려 할수록 더 크게 느껴질 수 있어요.",
+                "원인을 단정하기보다, 소통이 막힌 느낌인지 혼자 감당하는 느낌인지 같이 살펴볼 수 있습니다.",
             ]
         elif empathy_only:
             segments = [
@@ -1343,29 +1442,43 @@ class PsychologistAgent:
             )
 
         action_step = ""
-        for hint in (wellness_hint, counseling_hint):
-            safe_hint = self._safe_response_hint(hint, allow_low_mood=allow_low_mood)
-            if safe_hint:
-                action_step = safe_hint
-                break
-
-        if empathy_only:
-            action_step = "지금 감정을 고치려 하지 말고, 가장 가까운 감정 단어 하나만 천천히 떠올려보세요."
-        elif advice_requested:
-            action_step = "문제를 한 번에 해결하려 하지 말고, 지금 바로 할 수 있는 작은 실행 단계 하나만 정해보세요."
-        elif not action_step:
-            action_step = "지금 당장 해결하려 하기보다, 오늘 할 수 있는 가장 작은 한 가지를 정해보세요."
-
-        segments.append(action_step)
-        if followup_question:
-            segments.append(followup_question)
         safe_small_action = self._safe_response_hint(
             small_action_text,
             allow_low_mood=allow_low_mood,
             require_action=True,
         )
-        if safe_small_action:
-            segments.append(f"오늘의 작은 행동으로는 {safe_small_action}")
+
+        tailored_action_step = ""
+        if selected_cause == "sleep_maintenance":
+            tailored_action_step = "밤에 깨면 바로 시간을 확인하지 말고, 눈을 감은 채 호흡을 천천히 세 번만 해보세요."
+        elif selected_cause == "worry_or_anxiety":
+            tailored_action_step = "잠들기 전 떠오르는 걱정 하나만 짧게 적고, 지금 해결할 일과 내일 볼 일을 나눠보세요."
+
+        if empathy_only:
+            action_step = "지금 감정을 고치려 하지 말고, 가장 가까운 감정 단어 하나만 천천히 떠올려보세요."
+        elif advice_requested:
+            action_step = "문제를 한 번에 해결하려 하지 말고, 지금 바로 할 수 있는 작은 실행 단계 하나만 정해보세요."
+        elif tailored_action_step:
+            action_step = tailored_action_step
+        elif safe_small_action:
+            action_step = safe_small_action
+        else:
+            for hint in (wellness_hint, counseling_hint):
+                safe_hint = self._safe_response_hint(hint, allow_low_mood=allow_low_mood)
+                if safe_hint:
+                    action_step = safe_hint
+                    break
+
+        if not action_step:
+            action_step = "지금 당장 해결하려 하기보다, 오늘 할 수 있는 가장 작은 한 가지를 정해보세요."
+
+        if followup_question:
+            segments.append(followup_question)
+        if safe_small_action and action_step == safe_small_action:
+            segments.append(f"오늘의 작은 행동으로는 {action_step}")
+        else:
+            action_prefix = "" if action_step.startswith("오늘") else "오늘은 "
+            segments.append(f"{action_prefix}{action_step}")
         return "\n\n".join(segments)
 
     async def process_message_stream(

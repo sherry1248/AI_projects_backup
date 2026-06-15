@@ -74,6 +74,7 @@ INTENT_LABEL_KO = {
     "NEED_ADVICE": "조언 필요",
     "LONELINESS_SUPPORT": "고립감",
     "CRISIS_RISK": "위험 신호",
+    "OTHER_CONCERN": "기타 고민",
 }
 
 
@@ -411,11 +412,10 @@ def build_crisis_markdown() -> str:
         "\n".join(
             [
                 "- 위험 단계: 위험",
-                "- 지금은 안전이 가장 중요해요",
-                "- 109",
-                "- 119",
-                "- 112",
-                "- 가까운 사람에게 연락",
+                "- 지금은 안전이 가장 중요해요. 혼자 버티지 말고 즉시 도움을 요청하세요.",
+                "- 109(자살예방), 119(응급), 112(경찰) 중 하나로 바로 연락하세요.",
+                "- 가까이에 믿을 수 있는 사람에게 지금 연락해서 혼자 있지 않도록 해주세요.",
+                "- 즉각적인 위험이 있으면 가장 가까운 응급실이나 지역 정신건강복지센터로 가세요.",
             ]
         ),
         crisis=True,
@@ -512,6 +512,22 @@ def build_chat_response_text(
     """Return only user-facing chat text, without debug pipeline or duplicate notice."""
     risk_stage = (summary or {}).get("risk_stage", "관심")
     return _strip_default_safety_notice(response_text, risk_stage=risk_stage).strip()
+
+
+def initial_chat_messages() -> List[ChatMessage]:
+    """Return a fresh copy of the initial chat messages."""
+    return [dict(message) for message in INITIAL_CHAT_HISTORY]
+
+
+def initial_chat_history() -> List[ChatMessage]:
+    """Backward-compatible alias for the initial chat messages."""
+    return initial_chat_messages()
+
+
+def reset_chat_history() -> Tuple[List[ChatMessage], List[ChatMessage]]:
+    """Reset chat display and state to the initial assistant greeting."""
+    history = initial_chat_messages()
+    return history, [dict(message) for message in history]
 
 
 def save_emotion_diary(
@@ -697,7 +713,7 @@ async def handle_chat(
             summary = build_mock_summary(
                 message_text,
                 wellness_checkin,
-                "위기 신호가 감지되어 즉시 안전 안내를 우선했습니다.",
+                "위기 신호가 감지되어 안전 안내를 우선합니다. 지금은 109, 119, 112 중 하나로 바로 연락하고, 가까이에 믿을 수 있는 사람에게 알려 혼자 있지 않도록 해주세요. 즉각적인 위험이 있으면 가장 가까운 응급실이나 지역 정신건강복지센터로 가세요.",
                 risk_stage="위험",
                 source="crisis-fallback",
             )
@@ -754,12 +770,14 @@ async def handle_chat_ui(
     meal_status: int,
     energy_score: int,
     stress_score: int,
-) -> Tuple[List[ChatMessage], str, str, Dict[str, Any], str]:
+) -> Tuple[List[ChatMessage], List[ChatMessage], str, str, Dict[str, Any], str]:
     """Handle one chat turn for the user-facing Gradio chat UI."""
     history = normalize_chat_history(chat_history)
+    if not history:
+        history = initial_chat_messages()
     message_text = (message or "").strip()
     if not message_text:
-        return history, "", "", {"empty_message": True}, ""
+        return history, [dict(message) for message in history], "", "", {"empty_message": True}, ""
 
     markdown, summary = await handle_chat(
         message_text,
@@ -787,7 +805,7 @@ async def handle_chat_ui(
             {"role": "assistant", "content": response_text},
         ]
     )
-    return history, "", pipeline_markdown, summary, "응답이 준비됐어요."
+    return history, [dict(message) for message in history], "", pipeline_markdown, summary, "응답이 준비됐어요."
 
 
 def normalize_chat_history(chat_history: Optional[List[Any]]) -> List[ChatMessage]:
@@ -821,6 +839,17 @@ def toggle_nickname_input(anonymous_enabled: bool) -> Dict[str, Any]:
         return {"interactive": not bool(anonymous_enabled)}
 
 
+def show_status_checkin_panel() -> Tuple[Dict[str, Any], str]:
+    """Reveal optional status check controls from the next-step button."""
+    message = "상태 체크하기 영역에서 기분, 불안, 외로움, 수면 상태를 선택해 상담에 반영할 수 있어요."
+    try:
+        import gradio as gr
+
+        return gr.update(visible=True), message
+    except Exception:
+        return {"visible": True}, message
+
+
 def create_demo():
     """Create and return the Gradio demo interface."""
     try:
@@ -833,7 +862,6 @@ def create_demo():
     .app-title { font-size:24px; font-weight:700; color:#202124; margin-bottom:2px; }
     .app-sub { font-size:13px; color:#5f6368; margin-bottom:14px; }
     .chatbot { border-radius:12px; height:520px; max-height:520px; overflow-y:auto; }
-    .next-steps { border-top:1px solid #e5e7eb; margin-top:10px; padding-top:10px; }
     .input-row textarea { border-radius:10px !important; }
     .cta { border-radius:10px; font-weight:700; }
     .status-line { min-height:28px; color:#4c6f8f; font-size:13px; }
@@ -848,7 +876,7 @@ def create_demo():
                 "<div class='app-title'>Psychologist AI Agent</div>"
                 "<div class='app-sub'>2030 청년을 위한 익명 정서 지원, 감정 체크, 안정화 활동 추천, 위험 신호 조기 발견 데모입니다.</div>"
             )
-            chat_state = gr.State(INITIAL_CHAT_HISTORY)
+            chat_history_state = gr.State(initial_chat_messages())
             diary_state = gr.State({})
             summary_output = gr.JSON({}, visible=False)
 
@@ -864,7 +892,7 @@ def create_demo():
                         label="상담 채팅",
                         elem_classes="chatbot",
                         height=460,
-                        value=INITIAL_CHAT_HISTORY,
+                        value=initial_chat_messages(),
                     )
                     status_output = gr.Markdown("", elem_classes="status-line")
 
@@ -877,37 +905,13 @@ def create_demo():
                         )
                         submit = gr.Button("보내기", variant="primary", elem_classes="cta", scale=1)
 
-                    with gr.Row():
-                        def example_text(t: str):
-                            return t
-
-                        ex_normal = gr.Button("외로움 예시", elem_classes="example-button")
-                        ex_anxiety = gr.Button("불안 예시", elem_classes="example-button")
-                        ex_risk = gr.Button("위험 예시", elem_classes="example-button")
-
-                        ex_normal.click(lambda: example_text("요즘 너무 외롭고 잠을 잘 못 자요."), outputs=message)
-                        ex_anxiety.click(lambda: example_text("사람 만나는 게 부담스럽고 계속 불안해요."), outputs=message)
-                        ex_risk.click(lambda: example_text("죽고 싶어요."), outputs=message)
-
-                    gr.Markdown("<div class='small-note next-steps'>상담 후 필요하면 다음 단계로 이어갈 수 있어요.</div>")
-                    with gr.Row():
-                        checkin_shortcut = gr.Button("상태 체크하기", elem_classes="example-button")
-                        diary_shortcut = gr.Button("감정일기 쓰기", elem_classes="example-button")
-                        report_shortcut = gr.Button("마음정리 보고서 보기", elem_classes="example-button")
-                        expert_shortcut = gr.Button("전문가 상담 연결", elem_classes="example-button")
-                    shortcut_output = gr.Markdown("")
-
-                    with gr.Accordion("상태 체크하기", open=False):
-                        gr.Markdown("선택 입력입니다. 잘 모르겠으면 보통으로 두어도 괜찮아요.")
-                        with gr.Row():
-                            mood_score = gr.Slider(1, 5, value=3, step=1, label="오늘 기분")
-                            anxiety_score = gr.Slider(1, 5, value=3, step=1, label="불안감")
-                        with gr.Row():
-                            loneliness_score = gr.Slider(1, 5, value=3, step=1, label="외로움")
-                            sleep_quality = gr.Slider(1, 5, value=3, step=1, label="수면 상태")
-                        with gr.Row():
-                            meal_status = gr.Slider(1, 5, value=3, step=1, label="식사 상태")
-                            energy_score = gr.Slider(1, 5, value=3, step=1, label="에너지")
+                    with gr.Group(visible=False):
+                        mood_score = gr.Slider(1, 5, value=3, step=1, label="오늘 기분")
+                        anxiety_score = gr.Slider(1, 5, value=3, step=1, label="불안감")
+                        loneliness_score = gr.Slider(1, 5, value=3, step=1, label="외로움")
+                        sleep_quality = gr.Slider(1, 5, value=3, step=1, label="수면 상태")
+                        meal_status = gr.Slider(1, 5, value=3, step=1, label="식사 상태")
+                        energy_score = gr.Slider(1, 5, value=3, step=1, label="에너지")
                         stress_score = gr.Slider(1, 5, value=3, step=1, label="스트레스")
 
                 with gr.TabItem("감정일기"):
@@ -970,7 +974,7 @@ def create_demo():
             handle_chat_ui,
             inputs=[
                 message,
-                chat_state,
+                chat_history_state,
                 mood_score,
                 anxiety_score,
                 loneliness_score,
@@ -979,15 +983,18 @@ def create_demo():
                 energy_score,
                 stress_score,
             ],
-            outputs=[chatbot, message, pipeline_output, summary_output, status_output],
+            outputs=[
+                chatbot,
+                chat_history_state,
+                message,
+                pipeline_output,
+                summary_output,
+                status_output,
+            ],
         ).then(
             build_service_report,
             inputs=[summary_output, diary_state],
             outputs=report_output,
-        ).then(
-            lambda history: history,
-            inputs=chatbot,
-            outputs=chat_state,
         )
 
         diary_save.click(
@@ -1006,40 +1013,6 @@ def create_demo():
             build_service_report,
             inputs=[summary_output, diary_state],
             outputs=report_output,
-        )
-
-        checkin_shortcut.click(
-            lambda: "상태 체크하기 영역에서 기분, 불안, 외로움, 수면 상태를 선택해 상담에 반영할 수 있어요.",
-            outputs=shortcut_output,
-        )
-        diary_shortcut.click(
-            lambda: "감정일기 탭에서 오늘의 감정과 점수를 기록할 수 있어요.",
-            outputs=shortcut_output,
-        )
-        report_shortcut.click(
-            build_service_report,
-            inputs=[summary_output, diary_state],
-            outputs=report_output,
-        ).then(
-            lambda: "마음정리 보고서 탭에서 최근 상담 요약을 확인할 수 있어요.",
-            outputs=shortcut_output,
-        )
-        expert_shortcut.click(
-            lambda: wrap_card(
-                "전문가 상담 연결",
-                "\n".join(
-                    [
-                        "- 위기 상황: 109, 119, 112에 즉시 연락하세요.",
-                        "- 관심/주의 단계에서도 필요하면 가까운 사람이나 상담센터에 도움을 요청할 수 있어요.",
-                        "- 이 AI는 의료 진단이나 치료를 하지 않으며 전문 상담사를 대체하지 않습니다.",
-                    ]
-                ),
-                crisis=True,
-            ),
-            outputs=expert_output,
-        ).then(
-            lambda: "전문가 상담 연결 탭에서 연락처 안내를 확인할 수 있어요.",
-            outputs=shortcut_output,
         )
 
     return demo

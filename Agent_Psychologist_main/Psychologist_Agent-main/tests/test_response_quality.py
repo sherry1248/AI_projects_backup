@@ -76,8 +76,9 @@ def test_sleep_problem_response_includes_sleep_followup():
     result = asyncio.run(_run_message("요즘 잠을 못 자고 불안해요"))
 
     followup = result["pipeline_details"]["agents"]["followup"]["question"]
-    assert "잠드는 데 오래 걸리는 편인가요" in followup
+    assert "편인가요" in followup
     assert followup in result["response"]
+    assert "원인을 단정" in result["response"]
 
 
 def test_sleep_problem_response_does_not_mix_low_mood_sentence():
