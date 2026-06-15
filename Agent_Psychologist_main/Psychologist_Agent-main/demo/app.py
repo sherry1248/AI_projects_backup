@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import os
 import socket
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 os.environ.setdefault("LLM_TYPE", "MOCK")
@@ -74,7 +75,45 @@ INTENT_LABEL_KO = {
     "NEED_ADVICE": "조언 필요",
     "LONELINESS_SUPPORT": "고립감",
     "CRISIS_RISK": "위험 신호",
+    "CRISIS_SIGNAL": "위험 신호",
+    "RELATIONSHIP_STRESS": "관계 스트레스",
+    "WORK_OR_STUDY_STRESS": "일/학업 스트레스",
+    "FAMILY_CONFLICT": "가족 갈등",
+    "LOW_SELF_ESTEEM": "자존감 저하",
+    "SUBSTANCE_OR_ADDICTION": "중독 관련 고민",
+    "GRIEF_SUPPORT": "상실/애도",
+    "SUPPORT_REQUEST": "정서 지원 요청",
+    "EMOTIONAL_DISCLOSURE": "감정 표현",
+    "SAFETY_CONCERN": "안전 우려",
+    "PRACTICAL_HELP": "실질 도움 요청",
+    "REFLECTION": "자기 성찰",
+    "MEMORY_UPDATE": "상담 내용 업데이트",
+    "SMALL_ACTION": "작은 실천",
+    "CLARIFICATION": "상황 확인",
     "OTHER_CONCERN": "기타 고민",
+}
+
+CAUSE_LABEL_KO = {
+    "sleep_maintenance": "수면 중 자주 깸",
+    "worry_or_anxiety": "걱정이나 불안",
+    "lifestyle_rhythm": "생활 리듬",
+    "physical_fatigue": "몸의 피로",
+    "task_pressure": "해야 할 일의 압박",
+    "relationship_stress": "관계 스트레스",
+    "future_uncertainty": "미래에 대한 불확실성",
+    "accumulated_fatigue": "누적된 피로",
+    "exhaustion": "소진감",
+    "isolation": "고립감",
+    "low_self_evaluation": "자기 평가 저하",
+    "repeated_failure_experience": "반복된 실패감",
+    "overload": "과부하",
+    "unclear_starting_point": "시작점이 불명확함",
+    "pressure_to_finish": "끝내야 한다는 압박",
+    "fear_of_failure": "실패에 대한 걱정",
+    "communication_gap": "소통의 어긋남",
+    "fear_of_rejection": "거절에 대한 두려움",
+    "loneliness_in_relationship": "관계 안의 외로움",
+    "boundary_pressure": "관계 경계 부담",
 }
 
 
@@ -212,7 +251,7 @@ def _korean_intent_labels(labels: List[str]) -> List[str]:
 
 def _expert_guidance_for_stage(risk_stage: str) -> str:
     if risk_stage == "위험":
-        return "즉시 109, 119, 112 또는 가까운 응급실에 연락하세요."
+        return "즉시 109, 119, 112에 연락하고, 가까운 믿을 수 있는 사람에게 알리세요. 즉각적인 위험이 있으면 가까운 응급실이나 지역 정신건강복지센터로 가세요."
     return "필요하면 가까운 사람이나 상담센터에 도움을 요청할 수 있어요."
 
 
@@ -530,47 +569,470 @@ def reset_chat_history() -> Tuple[List[ChatMessage], List[ChatMessage]]:
     return history, [dict(message) for message in history]
 
 
+def _bounded_score(value: Any, default: int = 3) -> int:
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        score = default
+    return max(1, min(5, score))
+
+
+def _short_note(note: str) -> str:
+    compact = " ".join((note or "").split())
+    if not compact:
+        return ""
+    if any(label in compact for label in INTERNAL_HINT_LABELS):
+        return ""
+    return compact[:80]
+
+
+def _diary_entries(diary_state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(diary_state, dict) or not diary_state:
+        return []
+    entries = diary_state.get("entries")
+    if isinstance(entries, list):
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    if "mood_score" in diary_state:
+        legacy_entry = {
+            "timestamp": diary_state.get("timestamp", ""),
+            "emotion_label": diary_state.get("emotion_label", "선택 안 함"),
+            "mood_score": diary_state.get("mood_score"),
+            "anxiety_score": diary_state.get("anxiety_score"),
+            "loneliness_score": diary_state.get("loneliness_score"),
+            "sleep_quality": diary_state.get("sleep_quality", diary_state.get("sleep_score")),
+            "meal_status": diary_state.get("meal_status", 3),
+            "energy_score": diary_state.get("energy_score", 3),
+            "stress_score": diary_state.get("stress_score", 3),
+            "risk_stage": diary_state.get("risk_stage", "관심"),
+            "note": diary_state.get("note", ""),
+        }
+        return [legacy_entry]
+    return []
+
+
+def _score_label(value: Any) -> str:
+    return {
+        1: "매우 낮음",
+        2: "낮음",
+        3: "보통",
+        4: "높음",
+        5: "매우 높음",
+    }[_bounded_score(value)]
+
+
+def _burden_label(value: Any) -> str:
+    return {
+        1: "낮음",
+        2: "약간 있음",
+        3: "보통",
+        4: "높음",
+        5: "매우 높음",
+    }[_bounded_score(value)]
+
+
+def _sleep_label(value: Any) -> str:
+    return {
+        1: "매우 부족",
+        2: "부족",
+        3: "보통",
+        4: "양호",
+        5: "매우 양호",
+    }[_bounded_score(value)]
+
+
+def _energy_label(value: Any) -> str:
+    return {
+        1: "매우 낮음",
+        2: "낮음",
+        3: "보통",
+        4: "양호",
+        5: "매우 높음",
+    }[_bounded_score(value)]
+
+
+def _normalize_agent_key(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _primary_intent_label(intent: Dict[str, Any]) -> str:
+    candidates = []
+    primary = intent.get("primary_intent")
+    if isinstance(primary, str) and primary:
+        candidates.append(primary)
+    candidates.extend(_extract_labels(intent))
+
+    for candidate in candidates:
+        normalized = _normalize_agent_key(candidate)
+        if normalized:
+            return INTENT_LABEL_KO.get(normalized, normalized)
+    return "아직 판단 전"
+
+
+def _state_level(value: Any, *, reverse: bool = False) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return ""
+
+    if reverse:
+        if score < 0.4:
+            return "낮음"
+        if score < 0.65:
+            return "보통"
+        return "양호"
+
+    if score >= 0.65:
+        return "높음"
+    if score >= 0.4:
+        return "보통"
+    return "낮음"
+
+
+def _diary_burden_level(value: Any) -> str:
+    score = _bounded_score(value)
+    if score >= 4:
+        return "높음"
+    if score == 3:
+        return "보통"
+    return "낮음"
+
+
+def _diary_recovery_level(value: Any) -> str:
+    score = _bounded_score(value)
+    if score <= 2:
+        return "낮음"
+    if score == 3:
+        return "보통"
+    return "양호"
+
+
+def _emotional_state_labels(
+    state: Dict[str, Any],
+    latest_diary: Dict[str, Any],
+    wellness_checkin: Dict[str, Any],
+) -> List[str]:
+    labels = []
+
+    anxiety = _state_level(state.get("anxiety"))
+    stress = _state_level(state.get("stress"))
+    sleep = _state_level(state.get("sleep"), reverse=True)
+
+    if not anxiety and (latest_diary or wellness_checkin):
+        anxiety = _diary_burden_level(
+            latest_diary.get("anxiety_score", wellness_checkin.get("anxiety_score", 3))
+        )
+    if not stress and (latest_diary or wellness_checkin):
+        stress = _diary_burden_level(
+            latest_diary.get("stress_score", wellness_checkin.get("stress_score", 3))
+        )
+    if not sleep and (latest_diary or wellness_checkin):
+        sleep = _diary_recovery_level(
+            latest_diary.get("sleep_quality", wellness_checkin.get("sleep_quality", 3))
+        )
+
+    if anxiety:
+        labels.append(f"불안 {anxiety}")
+    if stress:
+        labels.append(f"스트레스 {stress}")
+    if sleep:
+        labels.append(f"수면 회복감 {sleep}")
+    return labels or ["상담 또는 감정일기 저장 후 표시"]
+
+
+def _is_high_anxiety_or_stress(
+    state: Dict[str, Any],
+    latest_diary: Dict[str, Any],
+    wellness_checkin: Dict[str, Any],
+) -> bool:
+    for key in ("anxiety", "stress"):
+        try:
+            if float(state.get(key, 0.0)) >= 0.65:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    anxiety_score = latest_diary.get("anxiety_score", wellness_checkin.get("anxiety_score", 3))
+    stress_score = latest_diary.get("stress_score", wellness_checkin.get("stress_score", 3))
+    return _bounded_score(anxiety_score) >= 4 or _bounded_score(stress_score) >= 4
+
+
+def _selected_cause_label(cause: Dict[str, Any]) -> Tuple[str, str]:
+    selected = cause.get("selected_cause") if isinstance(cause.get("selected_cause"), str) else ""
+    if not selected:
+        candidates = cause.get("cause_candidates")
+        if isinstance(candidates, list):
+            selected = next((item for item in candidates if isinstance(item, str) and item), "")
+    return selected, CAUSE_LABEL_KO.get(selected, selected) if selected else ""
+
+
+def _decision_action_summary(decision: Dict[str, Any], small_action: Dict[str, Any]) -> str:
+    primary = _normalize_agent_key(decision.get("primary_action") or decision.get("action"))
+    secondary = {
+        _normalize_agent_key(action)
+        for action in _safe_list(decision.get("secondary_actions"), max_items=8)
+    }
+
+    parts = []
+    if primary == "ESCALATE_SAFETY":
+        return "즉시 안전 안내"
+    if primary == "ASK_FOLLOW_UP":
+        parts.append("후속 질문")
+    elif primary == "RESPOND_SUPPORTIVELY":
+        parts.append("공감 응답")
+    elif primary == "SUMMARIZE_STATE":
+        parts.append("상태 요약")
+
+    if "SUGGEST_SMALL_ACTION" in secondary or bool(small_action.get("has_action")):
+        parts.append("작은 실천 행동 제안")
+    if "UPDATE_MEMORY" in secondary:
+        parts.append("상담 흐름 기억")
+    return " + ".join(parts) if parts else "공감 응답"
+
+
+def _next_counseling_plan(
+    *,
+    risk_stage: str,
+    selected_cause: str,
+    high_anxiety_or_stress: bool,
+) -> List[str]:
+    if risk_stage == "위험":
+        return [
+            "지금은 상담 계획보다 즉각적인 안전 확보가 우선입니다.",
+            "109, 119, 112 중 하나로 바로 연락하고, 가까이에 믿을 수 있는 사람에게 지금 알려 혼자 있지 않도록 합니다.",
+        ]
+
+    plan = []
+    if selected_cause == "sleep_maintenance":
+        plan.append("중간에 깨는 원인이 걱정 때문인지, 신체 긴장 때문인지 확인합니다.")
+    elif selected_cause == "worry_or_anxiety":
+        plan.append("잠들기 전 커지는 걱정의 주제를 함께 좁혀봅니다.")
+    else:
+        plan.append("현재 가장 부담이 큰 감정과 상황을 한 가지로 좁혀 다음 대화를 이어갑니다.")
+
+    if high_anxiety_or_stress:
+        plan.append("불안과 스트레스 변화를 감정일기로 추적합니다.")
+    return plan
+
+
+def _safe_report_sentence(value: Any, fallback: str) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return fallback
+    if len(text) > 120:
+        return fallback
+    if any(label in text for label in INTERNAL_HINT_LABELS):
+        return fallback
+    if any(raw_key in text for raw_key in RAW_LOOKING_KEYS):
+        return fallback
+    return escape_text(text)
+
+
+def _recent_status_labels(
+    state: Dict[str, Any],
+    latest_diary: Dict[str, Any],
+    wellness_checkin: Dict[str, Any],
+) -> Dict[str, str]:
+    if latest_diary:
+        return {
+            "불안": _burden_label(latest_diary.get("anxiety_score")),
+            "스트레스": _burden_label(latest_diary.get("stress_score")),
+            "수면 회복감": _diary_recovery_level(latest_diary.get("sleep_quality")),
+            "활력": _diary_recovery_level(latest_diary.get("energy_score")),
+        }
+
+    if wellness_checkin:
+        return {
+            "불안": _burden_label(wellness_checkin.get("anxiety_score")),
+            "스트레스": _burden_label(wellness_checkin.get("stress_score")),
+            "수면 회복감": _diary_recovery_level(wellness_checkin.get("sleep_quality")),
+            "활력": _diary_recovery_level(wellness_checkin.get("energy_score")),
+        }
+
+    labels: Dict[str, str] = {}
+    anxiety = _state_level(state.get("anxiety"))
+    stress = _state_level(state.get("stress"))
+    sleep = _state_level(state.get("sleep"), reverse=True)
+    energy = _state_level(state.get("energy"))
+    if anxiety:
+        labels["불안"] = anxiety
+    if stress:
+        labels["스트레스"] = stress
+    if sleep:
+        labels["수면 회복감"] = sleep
+    if energy:
+        labels["활력"] = energy
+    return labels
+
+
+def _recent_status_summary(status_labels: Dict[str, str]) -> str:
+    if not status_labels:
+        return "상담 또는 감정일기를 저장하면 최근 상태를 요약해드릴게요."
+
+    high_burdens = [
+        label
+        for label in ("불안", "스트레스")
+        if status_labels.get(label) in {"높음", "매우 높음"}
+    ]
+    low_recovery = [
+        label
+        for label in ("수면 회복감", "활력")
+        if status_labels.get(label) in {"낮음", "매우 낮음", "부족", "매우 부족"}
+    ]
+
+    parts = []
+    if high_burdens:
+        parts.append(f"{'과 '.join(high_burdens)}가 높고")
+    if low_recovery:
+        parts.append(f"{'과 '.join(low_recovery)}이 낮은")
+
+    if parts:
+        return "현재는 " + ", ".join(parts) + " 상태로 보입니다."
+
+    stable = [
+        label
+        for label, value in status_labels.items()
+        if value in {"보통", "양호", "매우 양호", "높음", "매우 높음"}
+    ]
+    if stable:
+        return f"현재는 {', '.join(stable)} 상태가 비교적 유지되고 있는 것으로 보입니다."
+    return "현재 마음 상태는 추가 기록을 통해 더 분명하게 확인할 수 있습니다."
+
+
+def _change_word(first: Any, last: Any) -> str:
+    delta = _bounded_score(last) - _bounded_score(first)
+    if delta > 0:
+        return "높아지고"
+    if delta < 0:
+        return "낮아지고"
+    return "비슷하게 유지되고"
+
+
+def _natural_trend_summary(first: Dict[str, Any], last: Dict[str, Any]) -> str:
+    changes = {
+        "기분": _change_word(first.get("mood_score"), last.get("mood_score")),
+        "불안": _change_word(first.get("anxiety_score"), last.get("anxiety_score")),
+        "스트레스": _change_word(first.get("stress_score"), last.get("stress_score")),
+        "수면 회복감": _change_word(first.get("sleep_quality"), last.get("sleep_quality")),
+        "활력": _change_word(first.get("energy_score"), last.get("energy_score")),
+    }
+
+    groups: Dict[str, List[str]] = {}
+    for label, change in changes.items():
+        groups.setdefault(change, []).append(label)
+
+    parts = [
+        f"{', '.join(labels)}: {change}"
+        for change, labels in groups.items()
+    ]
+    return "최근 기록과 비교했을 때 " + ", ".join(parts) + " 있는 흐름입니다."
+
+
+def build_emotional_trend_markdown(diary_state: Optional[Dict[str, Any]]) -> str:
+    entries = _diary_entries(diary_state)
+    if len(entries) < 2:
+        if entries:
+            return "- 첫 기준선이 기록됐어요. 감정일기를 한 번 더 저장하면 변화 방향을 함께 보여드릴게요."
+        return "- 아직 감정 변화 기록이 없습니다."
+
+    first = entries[0]
+    last = entries[-1]
+    return _natural_trend_summary(first, last)
+
+
+def diary_graph_message(diary_state: Optional[Dict[str, Any]]) -> str:
+    guidance = (
+        "그래프는 여러 번 기록했을 때 장기적인 변화 흐름을 보기 위한 참고 자료입니다. "
+        "높을수록 더 안정적이고 회복된 상태를 의미합니다."
+    )
+    entries = _diary_entries(diary_state)
+    if len(entries) < 2:
+        return (
+            "기록이 2개 이상이면 변화 흐름을 더 분명하게 볼 수 있습니다.\n\n"
+            f"{guidance}"
+        )
+    return guidance
+
+
+def diary_trend_dataframe(diary_state: Optional[Dict[str, Any]]) -> Any:
+    rows = []
+    for index, entry in enumerate(_diary_entries(diary_state), start=1):
+        record_label = f"{index}번째 기록"
+        display_scores = (
+            ("기분", _bounded_score(entry.get("mood_score"))),
+            ("안정감", 6 - _bounded_score(entry.get("anxiety_score"))),
+            ("여유감", 6 - _bounded_score(entry.get("stress_score"))),
+            ("수면 회복감", _bounded_score(entry.get("sleep_quality"))),
+            ("활력", _bounded_score(entry.get("energy_score"))),
+        )
+        for label, score in display_scores:
+            rows.append(
+                {
+                    "기록": record_label,
+                    "항목": label,
+                    "마음 회복 수준": score,
+                }
+            )
+
+    try:
+        import pandas as pd
+
+        frame = pd.DataFrame(rows, columns=["기록", "항목", "마음 회복 수준"])
+        return frame
+    except Exception:
+        return rows
+
+
 def save_emotion_diary(
+    diary_state: Optional[Dict[str, Any]],
     emotion_label: str,
     mood_score: int,
-    sleep_score: int,
     anxiety_score: int,
     loneliness_score: int,
+    sleep_quality: int,
+    meal_status: int,
+    energy_score: int,
+    stress_score: int,
     diary_line: str,
     save_consent: bool,
 ) -> Tuple[Dict[str, Any], str]:
-    """Store only structured diary values for the demo report."""
-    text_length = len((diary_line or "").strip())
-    if text_length == 0:
-        length_bucket = "empty"
-    elif text_length <= 20:
-        length_bucket = "short"
-    elif text_length <= 60:
-        length_bucket = "medium"
-    else:
-        length_bucket = "long"
-
-    diary_state = {
+    """Store timestamped structured diary values for the current demo session."""
+    entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "emotion_label": str(emotion_label or "선택 안 함"),
-        "mood_score": int(mood_score),
-        "sleep_score": int(sleep_score),
-        "anxiety_score": int(anxiety_score),
-        "loneliness_score": int(loneliness_score),
-        "has_diary_text": bool(text_length),
-        "diary_length_bucket": length_bucket,
+        "mood_score": _bounded_score(mood_score),
+        "anxiety_score": _bounded_score(anxiety_score),
+        "loneliness_score": _bounded_score(loneliness_score),
+        "sleep_quality": _bounded_score(sleep_quality),
+        "meal_status": _bounded_score(meal_status),
+        "energy_score": _bounded_score(energy_score),
+        "stress_score": _bounded_score(stress_score),
+        "risk_stage": infer_risk_stage(
+            {
+                "mood_score": _bounded_score(mood_score),
+                "anxiety_score": _bounded_score(anxiety_score),
+                "loneliness_score": _bounded_score(loneliness_score),
+                "sleep_quality": _bounded_score(sleep_quality),
+                "meal_status": _bounded_score(meal_status),
+                "energy_score": _bounded_score(energy_score),
+                "stress_score": _bounded_score(stress_score),
+            }
+        ),
+        "note": _short_note(diary_line),
         "save_consent": bool(save_consent),
     }
+    entries = _diary_entries(diary_state)
+    entries.append(entry)
+    entries = entries[-20:]
+    updated_state = {"entries": entries, "latest_entry": entry}
 
     summary_lines = [
-        f"- 오늘의 감정: {escape_text(diary_state['emotion_label'])}",
-        f"- 기분/수면/불안/외로움: {mood_score}/{sleep_score}/{anxiety_score}/{loneliness_score}",
-        f"- 한 줄 일기: {'입력됨' if text_length else '미입력'}",
-        "- 일기 원문은 저장하지 않고 구조화 값만 보고서에 반영합니다.",
+        "- 감정일기가 저장되었습니다. 마음정리 보고서에서 감정 변화 그래프를 확인할 수 있어요.",
     ]
     if not save_consent:
-        summary_lines.append("- 기록 저장 동의가 꺼져 있어 데모 화면 안에서만 임시 반영됩니다.")
+        summary_lines.append("- 기록 저장 동의가 꺼져 있어 현재 데모 세션에서만 임시로 보여줍니다.")
 
-    return diary_state, wrap_card("감정일기 저장 요약", "\n".join(summary_lines))
+    return updated_state, wrap_card("감정일기 저장 완료", "\n".join(summary_lines))
 
 
 def build_service_report(
@@ -588,47 +1050,89 @@ def build_service_report(
     intent = _as_dict(agents.get("intent"))
     state = _as_dict(agents.get("emotional_state"))
     decision = _as_dict(agents.get("decision"))
-    followup = _as_dict(agents.get("followup"))
     small_action = _as_dict(agents.get("small_action"))
+    cause = _as_dict(agents.get("cause_exploration"))
+    diary_entries = _diary_entries(diary_state)
+    latest_diary = diary_entries[-1] if diary_entries else {}
+    wellness_checkin = _as_dict(summary.get("wellness_checkin"))
 
     risk_stage = summary.get("risk_stage") or result.get("risk_stage") or "관심"
     intent_labels = _extract_labels(intent)
-    state_summary = _safe_list(state.get("state_summary"))
     primary_intent = intent.get("primary_intent")
-    primary_action = decision.get("primary_action") or decision.get("action")
     action_text = small_action.get("action_text") if isinstance(small_action.get("action_text"), str) else ""
-    followup_question = followup.get("question") if isinstance(followup.get("question"), str) else ""
 
     concern_keywords = []
     if isinstance(primary_intent, str) and primary_intent:
         concern_keywords.append(primary_intent)
     concern_keywords.extend(intent_labels)
     concern_keywords = _korean_intent_labels(_safe_list(concern_keywords, max_items=8))[:4]
+    primary_intent_ko = _primary_intent_label(intent)
+    secondary_concerns = [
+        label for label in concern_keywords
+        if label != primary_intent_ko
+    ]
+    selected_cause, selected_cause_label = _selected_cause_label(cause)
+    main_concern = escape_text(selected_cause_label) if selected_cause_label else (
+        ", ".join(secondary_concerns) if secondary_concerns else "아직 없음"
+    )
+    action_summary = _decision_action_summary(decision, small_action)
+    high_anxiety_or_stress = _is_high_anxiety_or_stress(state, latest_diary, wellness_checkin)
+    next_plan = _next_counseling_plan(
+        risk_stage=str(risk_stage),
+        selected_cause=selected_cause,
+        high_anxiety_or_stress=high_anxiety_or_stress,
+    )
 
-    diary_lines = []
-    if diary_state:
-        diary_lines = [
-            _safe_key_value("emotion_label", diary_state.get("emotion_label")),
-            _safe_key_value("mood_score", diary_state.get("mood_score")),
-            _safe_key_value("sleep_score", diary_state.get("sleep_score")),
-            _safe_key_value("anxiety_score", diary_state.get("anxiety_score")),
-            _safe_key_value("loneliness_score", diary_state.get("loneliness_score")),
-            _safe_key_value("has_diary_text", diary_state.get("has_diary_text")),
-        ]
+    recent_status = _recent_status_labels(state, latest_diary, wellness_checkin)
+    recent_state_lines = [
+        f"- {label}: {escape_text(value)}"
+        for label, value in recent_status.items()
+    ]
+    if not recent_state_lines:
+        recent_state_lines = ["- 상담 또는 감정일기 저장 후 표시됩니다."]
+    recent_state_lines.append(
+        f"- 최근 상태 요약: {escape_text(_recent_status_summary(recent_status))}"
+    )
 
-    report_lines = [
-        f"- 주요 감정: {', '.join(state_summary) if state_summary else escape_text(str(diary_state.get('emotion_label', '아직 없음')))}",
-        f"- 주요 고민 키워드: {', '.join(concern_keywords) if concern_keywords else '아직 없음'}",
-        f"- 위험 단계: {escape_text(risk_stage)}",
-        f"- 추천 안정화 활동: {escape_text(action_text) if action_text and len(action_text) <= 120 else '상담 채팅 후 표시됩니다.'}",
-        f"- 다음 follow-up 질문: {escape_text(followup_question) if followup_question and len(followup_question) <= 120 else '상담 채팅 후 표시됩니다.'}",
-        f"- 전문가 상담 안내: {_expert_guidance_for_stage(str(risk_stage))}",
+    risk_lines = [f"- 현재 단계: {escape_text(risk_stage)}"]
+    if risk_stage == "위험":
+        risk_lines.extend(
+            [
+                "- 지금은 안전 확보가 가장 중요합니다.",
+                "- 109, 119, 112 중 하나로 바로 연락하고 가까이에 믿을 수 있는 사람에게 알려주세요.",
+            ]
+        )
+
+    agent_summary_lines = [
+        f"- 의도 판단: {escape_text(primary_intent_ko)}",
+        f"- 원인 탐색: {escape_text(selected_cause_label or main_concern or '아직 탐색 전')}",
+        f"- 다음 상담 방향: {escape_text(' '.join(next_plan))}",
+    ]
+    next_plan_lines = [f"- {escape_text(item)}" for item in next_plan]
+    small_action_text = _safe_report_sentence(action_text, "상담 채팅 후 표시됩니다.")
+    small_action_lines = [
+        f"- {small_action_text}",
+        f"- 방향: {escape_text(action_summary)}",
     ]
 
-    sections = [wrap_card("마음정리 보고서", "\n".join(report_lines))]
-    if diary_lines:
-        sections.append(wrap_card("감정 체크 요약", "\n".join(f"- {line}" for line in diary_lines if line)))
+    sections = []
+    sections.append(wrap_card("최근 마음 상태", "\n".join(recent_state_lines)))
+    sections.append(wrap_card("현재 위험 단계", "\n".join(risk_lines), crisis=risk_stage == "위험"))
+    sections.append(wrap_card("Agent 판단 요약", "\n".join(agent_summary_lines)))
+    sections.append(wrap_card("오늘의 작은 실천", "\n".join(small_action_lines)))
+    sections.append(wrap_card("최근 마음 회복 흐름", build_emotional_trend_markdown(diary_state)))
     return "\n\n".join(sections)
+
+
+def build_report_outputs(
+    summary: Optional[Dict[str, Any]],
+    diary_state: Optional[Dict[str, Any]],
+) -> Tuple[str, Any, str]:
+    return (
+        build_service_report(summary, diary_state),
+        diary_trend_dataframe(diary_state),
+        diary_graph_message(diary_state),
+    )
 
 
 def build_error_markdown(error_text: str) -> str:
@@ -926,9 +1430,13 @@ def create_demo():
                     with gr.Row():
                         diary_anxiety = gr.Slider(1, 5, value=3, step=1, label="불안 점수")
                         diary_loneliness = gr.Slider(1, 5, value=3, step=1, label="외로움 점수")
+                    with gr.Row():
+                        diary_meal = gr.Slider(1, 5, value=3, step=1, label="식사 상태")
+                        diary_energy = gr.Slider(1, 5, value=3, step=1, label="에너지 점수")
+                        diary_stress = gr.Slider(1, 5, value=3, step=1, label="스트레스 점수")
                     diary_line = gr.Textbox(
                         label="한 줄 일기",
-                        placeholder="원문은 저장하지 않고 입력 여부와 구조화 값만 반영합니다.",
+                        placeholder="선택 입력입니다. 보고서에는 짧은 메모만 표시됩니다.",
                         lines=2,
                     )
                     diary_save = gr.Button("감정일기 저장", variant="primary")
@@ -936,6 +1444,18 @@ def create_demo():
 
                 with gr.TabItem("마음정리 보고서"):
                     report_output = gr.Markdown(build_service_report({}, {}))
+                    report_graph_note = gr.Markdown(diary_graph_message({}))
+                    report_trend_plot = gr.LinePlot(
+                        value=diary_trend_dataframe({}),
+                        x="기록",
+                        y="마음 회복 수준",
+                        color="항목",
+                        title="최근 마음 회복 흐름",
+                        x_title="기록",
+                        y_title="마음 회복 수준",
+                        y_lim=[1, 5],
+                        height=460,
+                    )
 
                 with gr.TabItem("전문가 상담 연결"):
                     expert_output = gr.Markdown(
@@ -992,27 +1512,31 @@ def create_demo():
                 status_output,
             ],
         ).then(
-            build_service_report,
+            build_report_outputs,
             inputs=[summary_output, diary_state],
-            outputs=report_output,
+            outputs=[report_output, report_trend_plot, report_graph_note],
         )
 
         diary_save.click(
             save_emotion_diary,
             inputs=[
+                diary_state,
                 diary_emotion,
                 diary_mood,
-                diary_sleep,
                 diary_anxiety,
                 diary_loneliness,
+                diary_sleep,
+                diary_meal,
+                diary_energy,
+                diary_stress,
                 diary_line,
                 save_consent,
             ],
             outputs=[diary_state, diary_output],
         ).then(
-            build_service_report,
+            build_report_outputs,
             inputs=[summary_output, diary_state],
-            outputs=report_output,
+            outputs=[report_output, report_trend_plot, report_graph_note],
         )
 
     return demo

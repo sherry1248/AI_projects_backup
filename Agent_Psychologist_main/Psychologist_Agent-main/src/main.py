@@ -37,6 +37,7 @@ from src.counseling import CounselingRetriever, CounselingRecommendation
 from src.empathy import EmpathyRetriever, EmpathyRecommendation
 from src.wellness.recommender import WellnessRecommender, WellnessRecommendation
 from src.session.manager import SessionManager
+from src.learning.response_policy import ResponsePolicyPredictor, default_policy_hints
 from src.utils.logging_config import setup_logging
 
 logger = setup_logging("psychologist_agent")
@@ -121,6 +122,7 @@ class PsychologistAgent:
         self.memory_store = MemoryStore()
         self.wellness_recommender = WellnessRecommender()
         self.session_manager = SessionManager(memory_store=self.memory_store)
+        self.response_policy_predictor: Optional[ResponsePolicyPredictor] = None
 
         if self.config.enable_audit_logging:
             self.audit_logger = AuditLogger()
@@ -145,6 +147,8 @@ class PsychologistAgent:
 
         if not self.mock_mode:
             await self.local_generator.initialize()
+
+        self.response_policy_predictor = ResponsePolicyPredictor()
 
         self._initialized = True
         logger.info("PsychologistAgent initialized successfully")
@@ -204,6 +208,7 @@ class PsychologistAgent:
         followup_question = ""
         small_action_plan = None
         cause_exploration = CauseExplorationResult()
+        learned_policy = default_policy_hints()
         continuity_memory = None
         previous_emotional_state = None
         previous_small_action = None
@@ -289,6 +294,11 @@ class PsychologistAgent:
             timing["safety"] = self._elapsed_ms(safety_start)
 
             result["pipeline_details"].setdefault("agents", {})
+            learned_policy = self._predict_response_policy(user_input)
+            result["pipeline_details"]["agents"]["learned_response_policy"] = (
+                self._safe_learned_policy_details(learned_policy)
+            )
+
             dataset_start = time.perf_counter()
             intent_result = classify_intent(user_input)
 
@@ -453,6 +463,7 @@ class PsychologistAgent:
                 proactive_recall=proactive_recall,
                 followup_question=followup_question,
                 small_action_plan=small_action_plan,
+                learned_policy=learned_policy,
             )
             result["pipeline_details"]["agents"]["prompt_context"] = agent_context
             timing["agent_pipeline"] = self._elapsed_ms(agent_pipeline_start)
@@ -639,6 +650,8 @@ class PsychologistAgent:
                     "empathy_style_hint": empathy_recommendation.empathy_style_hint,
                     "wellness_hint": wellness_recommendation.support_hint if wellness_recommendation else "",
                     "wellness_risk_stage": wellness_recommendation.risk_stage if wellness_recommendation else "",
+                    "learned_cause": learned_policy.get("learned_cause", ""),
+                    "learned_action": learned_policy.get("learned_action", ""),
                 },
                 memory_context=memory_context,
                 agent_context=agent_context,
@@ -1122,6 +1135,27 @@ class PsychologistAgent:
             "status": getattr(small_action_plan, "status", ""),
         }
 
+    def _predict_response_policy(self, user_input: str) -> Dict[str, Any]:
+        predictor = self.response_policy_predictor
+        if predictor is None:
+            predictor = ResponsePolicyPredictor()
+            self.response_policy_predictor = predictor
+        try:
+            return predictor.predict(user_input)
+        except Exception as exc:
+            logger.warning("Response policy prediction unavailable: %s", exc)
+            return default_policy_hints()
+
+    def _safe_learned_policy_details(self, policy: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "learned_intent": str(policy.get("learned_intent", "") or ""),
+            "learned_emotion": str(policy.get("learned_emotion", "") or ""),
+            "learned_cause": str(policy.get("learned_cause", "") or ""),
+            "learned_action": str(policy.get("learned_action", "") or ""),
+            "confidence": round(float(policy.get("confidence", 0.0) or 0.0), 4),
+            "available": bool(self.response_policy_predictor and self.response_policy_predictor.available),
+        }
+
     def _sync_final_safety_agent(self, result: Dict[str, Any]) -> None:
         """Mirror final risk fields into the agent-facing safety summary."""
         details = result.setdefault("pipeline_details", {})
@@ -1148,13 +1182,20 @@ class PsychologistAgent:
         proactive_recall: Any,
         followup_question: str,
         small_action_plan: Any,
+        learned_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        safe_policy = self._safe_learned_policy_details(learned_policy or default_policy_hints())
         return {
             "decision": self._serialize_decision_agent(decision_result),
             "emotional_state": self._serialize_emotional_state_agent(emotional_state),
             "proactive_recall": self._serialize_memory_recall_agent(proactive_recall),
             "followup": {"question": followup_question},
             "small_action": self._serialize_small_action_agent(small_action_plan),
+            "learned_response_policy": {
+                "learned_cause": safe_policy["learned_cause"],
+                "learned_action": safe_policy["learned_action"],
+                "confidence": safe_policy["confidence"],
+            },
         }
 
     def _add_safety_notice(self, response_text: str) -> str:
